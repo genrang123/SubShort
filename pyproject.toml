@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "subshort"
+version = "0.1.0"
+description = "Desktop video translation, subtitles, dubbing and export"
+requires-python = ">=3.11"
+dependencies = ["requests>=2.31", "yt-dlp>=2024.1", "edge-tts>=6.1"]
+
+[project.optional-dependencies]
+local = ["faster-whisper>=1.0", "av<19", "soundfile>=0.12"]
+separation = ["audio-separator[cpu]>=0.48,<0.49", "audioread>=3.1,<4"]
+drive = ["google-auth[requests]>=2.62.2,<3"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["subshort", "subshort.*"]
+
+[tool.setuptools.package-data]
+subshort = ["default_settings.json"]
+
+[project.scripts]
+subshort = "subshort.cli:main"
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
+# fd capture breaks Tcl file reads on Windows, so Tk roots fail to initialize randomly
+addopts = "--capture=sys"
