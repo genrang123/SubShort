@@ -1,7 +1,9 @@
 # SubShort
 
 Ứng dụng desktop Windows để tải/nhập video, nhận dạng lời nói, dịch, tạo phụ đề, lồng tiếng và xuất video.
-Giao diện desktop dùng theme studio tối tùy chỉnh: sidebar công cụ, bảng hàng đợi có thanh cuộn, thống kê trạng thái và thanh thao tác riêng. Cài đặt chia theo danh mục ở sidebar; API, giọng nói và Drive dùng cùng bảng màu. Không đổi pipeline, credential hay định dạng lịch sử. File picker và thanh tiêu đề vẫn dùng Windows để giữ tích hợp hệ thống.
+
+Xem [lịch sử thay đổi](CHANGELOG.md).
+
 Chọn một hoặc nhiều job rồi bấm **Xóa đã chọn** để bỏ khỏi lịch sử hàng đợi sau khi xác nhận. Không xóa video nguồn hoặc kết quả; không cho xóa khi đang xử lý/tải lên. Sau khi đổi dịch vụ API, xóa job cũ và thêm lại video để dùng cấu hình mới.
 
 ## Cấu trúc dự án
@@ -81,7 +83,7 @@ Kiểm chứng cấu hình này: `output/local-connected-test/acceptance.json` g
 
 Dịch gửi transcript tới provider đã chọn; Edge TTS gửi bản dịch tới Edge; xóa phụ đề `auto` gửi 3 frame tới provider vision đã chọn. Không có checkbox cho phép gửi riêng; các cờ consent dịch/Edge/vision cũ bị bỏ qua kể cả trong snapshot job. Giấy phép OmniVoice và thao tác upload giữ nguyên.
 
-## Cấu hình và job (Phase 1)
+## Cấu hình và job
 
 - `source_language` là ngôn ngữ ASR, chuỗi rỗng để tự nhận dạng; `target_language` là ngôn ngữ dịch. Cấu hình cũ thiếu trường nguồn dùng tự nhận dạng, không lấy ngôn ngữ đích làm nguồn.
 - `background_volume` giữ đơn vị **0–1** (ví dụ `0.25`); giá trị phần trăm như `25` bị từ chối. Tốc độ phải hữu hạn và dương. Không gộp đoạn nguồn thành clip đọc: mỗi đoạn giữ ID/timestamp riêng; dịch nhiều đoạn cùng request để lấy ngữ cảnh. Cấu hình/job cũ có `merge_words` hoặc `merge_segments` vẫn đọc được nhưng không áp dụng gộp; snapshot mới không giữ hai trường này.
@@ -90,7 +92,7 @@ Dịch gửi transcript tới provider đã chọn; Edge TTS gửi bản dịch 
 - Job có trạng thái `queued`, `running`, `done`, `failed`, `cancelled`, trường `stage` và `progress` từ 0–100%. Pipeline cập nhật snapshot ở các mốc download/probe/ASR/dịch/TTS/mix/render; hủy giữ stage/progress và intermediate để retry/resume kiểm tra manifest. Retry xóa output/error/progress/metadata cũ.
 - Lời Việt bắt đầu theo mốc nguồn chia `slow_speed`, kết thúc trước đoạn kế tiếp (đoạn cuối trước hết video). Clip ngắn giữ nhịp tự nhiên; clip dài tăng tốc giữ cao độ tối đa 1,4×. Nếu vẫn dài, yêu cầu provider rút gọn giữ ý một lần rồi tạo giọng lại; vẫn không vừa thì job lỗi, không cắt tiếng, dời câu sau hoặc kéo hình để bù. Phụ đề theo clip đã xử lý; `final_speed` áp đồng bộ hình/tiếng/phụ đề. Rút gọn có thể phát sinh phí API và cần kiểm tra nội dung.
 
-## Queue, batch và hủy (Phase 2)
+## Queue, batch và hủy
 
 - Mỗi lần Start lấy một batch cố định từ job queued/failed, claim trước khi chạy và xử lý tuần tự; bấm Start lặp không tạo worker mới. Job cancelled chỉ chạy lại khi chọn **Thử lại đã chọn**. Retry dùng snapshot job và chỉ reuse intermediate khi manifest khớp source/config/content/model cùng hash artifact; file tồn tại riêng lẻ không đủ.
 - **Hủy batch** ngừng nhận job tiếp theo và hủy job hiện tại; giữ intermediate, xóa tham chiếu output để không báo thành công giả. Đóng cửa sổ yêu cầu hủy rồi chờ worker dừng; worker chỉ gửi event, Tk cập nhật trên main thread.
@@ -99,7 +101,7 @@ Dịch gửi transcript tới provider đã chọn; Edge TTS gửi bản dịch 
 - Hủy native Whisper chỉ nhận được tại ranh giới model/segment; không cưỡng bức ngắt native inference trong process ứng dụng. Hủy subprocess chỉ kết thúc cây process do job sở hữu; không đụng process khác.
 - Khóa queue chỉ bảo vệ các thread trong một instance; không mở hai instance cùng ghi một file lịch sử. Chưa có khóa liên process.
 
-## Credential và request (Phase 3)
+## Credential và request
 
 - **Cài đặt API** nhập key OpenAI/Gemini/OpenAI-compatible: để trống giữ key hiện tại; chọn **Xóa key** để xóa. Dialog không hiện lại giá trị đã lưu. Các provider dịch dùng contract ID và cần credential tương ứng.
 - Credential lưu tại `config/credentials.dpapi`, mã hóa bằng Windows DPAPI theo tài khoản hiện tại; `settings.json` chỉ giữ preference. Không sao chép file này sang tài khoản/máy khác để dùng key. DPAPI không bảo vệ khỏi phần mềm đang chạy dưới cùng tài khoản Windows.
@@ -107,13 +109,13 @@ Dịch gửi transcript tới provider đã chọn; Edge TTS gửi bản dịch 
 - OpenAI: tối đa 3 lần thử, mỗi lần timeout 30 giây; retry network/timeout/408/429/5xx, backoff 0.5 rồi 1 giây, Retry-After được giới hạn 30 giây. Auth/quota không retry và dừng batch; hủy có hiệu lực cả khi chờ backoff. Thông báo lỗi không chứa response body/key.
 - Batch đang chạy giữ credential lúc Start; key sửa trong dialog áp dụng batch sau. Key rỗng bị chặn trước khi gửi request. Không lưu key vào snapshot job.
 
-## ASR và dịch có contract (Phase 4)
+## ASR và dịch có contract
 
 - Probe duration/video/audio trước ASR. Nguồn không audio hoặc ASR trả danh sách rỗng được sao chép nguyên byte thành output `*_preserved`, ghi lý do `no_audio`/`no_speech`; không gọi dịch/TTS/render, không áp tốc độ. Đây là nhánh bảo toàn nguồn, không phải phát hiện im lặng bằng ngưỡng năng lượng.
 - ASR phải trả text không rỗng và timestamp hữu hạn, không âm, start < end, trong duration nguồn, start/end có thứ tự; cue overlap vẫn được phép. Dữ liệu sai bị chặn trước dịch, không ép kiểu hay bỏ row âm thầm.
-- Dịch dùng JSON schema và ID: map theo ID thay vì vị trí, yêu cầu đủ/duy nhất ID và text không rỗng. Response thiếu/trùng/thừa ID gây lỗi; không lấy text nguồn làm fallback. Một request đang chạy tại một thời điểm; tiếp tục dùng timeout/retry/cancel Phase 3. Hủy hoặc response sai không công bố output thành công.
+- Dịch dùng JSON schema và ID: map theo ID thay vì vị trí, yêu cầu đủ/duy nhất ID và text không rỗng. Response thiếu/trùng/thừa ID gây lỗi; không lấy text nguồn làm fallback. Một request đang chạy tại một thời điểm, theo chính sách timeout/retry/cancel ở mục Credential và request. Hủy hoặc response sai không công bố output thành công.
 
-## Timeline và publish (Phase 5)
+## Timeline và publish
 
 - Clip TTS được chuẩn hóa mono PCM16 24 kHz và đo bằng số frame thật. Mỗi clip giữ mốc nguồn / `slow_speed`, fit trong cửa sổ bằng tempo tối đa 1,4×; không đẩy start theo clip trước hoặc kéo/freeze hình để che overrun. Raw TTS tách clip fit để resume không áp tempo hai lần.
 - `timeline.json` giữ source ID/bounds, cửa sổ, duration raw/fit, tempo và text thực đọc; `pipeline_timing.json` dùng policy `source-windows-v1`. Nhiều speaker dùng cửa sổ từng lane và mix PCM tại mốc nguồn; nhãn/voice map thiếu hoặc chưa duyệt bị chặn.
