@@ -11,6 +11,8 @@ import uuid
 
 from .credentials import CREDENTIAL_FIELDS, CredentialError, CredentialStore, _MIGRATE_ERROR, _write_atomic
 
+ASR_MODELS = {"local": "faster-whisper-small", "qwen": "Qwen3-ASR-0.6B", "firered": "FireRedASR-AED-L"}
+
 
 _SECRET_NAMES = frozenset(
     name.replace("_", "") for name in CREDENTIAL_FIELDS
@@ -32,6 +34,8 @@ class Settings:
     ffmpeg: str = "ffmpeg"
     ffprobe: str = "ffprobe"
     asr_provider: str = "local"
+    qwen_python: str = ""
+    firered_python: str = ""
     asr_model: str = ""
     asr_device: str = "cpu"
     asr_aligner: str = ""
@@ -127,7 +131,7 @@ class Settings:
 
     def validate(self, mode: str | None = None) -> None:
         for name, supported in (
-            ("asr_provider", {"local", "qwen", "firered"}),
+            ("asr_provider", ASR_MODELS),
             ("asr_device", {"cpu", "cuda"}),
             ("firered_type", {"aed", "llm"}),
             ("translation_provider", {"openai", "gemini", "openai_compatible"}),
@@ -200,12 +204,8 @@ class Settings:
             if not (Path(command).is_file() or shutil.which(command)):
                 raise ValueError(f"Không tìm thấy executable: {command}")
 
-        self._check_path(self.asr_model, directory=True, required="asr_model")
-        if self.asr_provider == "qwen":
-            self._check_path(self.asr_aligner, directory=True, required="asr_aligner")
-            self._check_path(self.asr_vad_model, directory=False, required="asr_vad_model")
-        elif self.asr_provider == "firered":
-            self._check_path(self.asr_vad_model, directory=False, required="asr_vad_model")
+        self.asr_worker_python()
+        self.asr_assets()
 
         speaking = active_mode != "subtitle" and self.tts_provider != "none"
         if self.tts_provider == "edge":
@@ -227,13 +227,78 @@ class Settings:
             self._check_path(self.separator_model_dir, directory=True, required="separator_model_dir")
             self._check_command(self.separator_python)
 
-    def _check_path(self, value: str, *, directory: bool | None, required: str | None = None) -> None:
-        if not isinstance(value, str) or not value.strip():
+    def asr_assets(self) -> tuple[Path, Path | None, Path | None]:
+        install = Path(sys.executable).resolve().parent if getattr(sys, "frozen", False) else self.root
+        models = install / "ModelASR"
+        if self.asr_provider not in ASR_MODELS:
+            raise ValueError(f"asr_provider chưa được hỗ trợ: {self.asr_provider}")
+        name = ASR_MODELS[self.asr_provider]
+        model = models / name
+        if self.asr_provider == "local" and self.asr_model == "" and not model.is_dir():
+            cache = models / "models--Systran--faster-whisper-small"
+            ref = cache / "refs" / "main"
+            if ref.is_file():
+                revision = ref.read_text(encoding="utf-8").strip()
+                if len(revision) == 40 and all(c in "0123456789abcdef" for c in revision):
+                    model = cache / "snapshots" / revision
+        if self.asr_model != "":
+            self._check_path(self.asr_model, directory=True, required="asr_model")
+            model = self.root / self.asr_model
+        else:
+            self._check_path(model, directory=True, required="asr_model")
+        if self.asr_provider == "local":
+            return model, None, None
+        aligner = None
+        if self.asr_provider == "qwen":
+            if self.asr_aligner != "":
+                self._check_path(self.asr_aligner, directory=True, required="asr_aligner")
+                aligner = self.root / self.asr_aligner
+            else:
+                aligner = models / "Qwen3-ForcedAligner-0.6B"
+                self._check_path(aligner, directory=True, required="asr_aligner")
+        vad = models / "silero_vad.jit"
+        if self.asr_vad_model != "":
+            self._check_path(self.asr_vad_model, directory=False, required="asr_vad_model")
+            vad = self.root / self.asr_vad_model
+        elif not vad.is_file():
+            python = self.asr_worker_python() or Path(sys.executable)
+            prefix = python.parent.parent if python.parent.name.lower() == "scripts" else python.parent
+            installed_vad = prefix / "Lib/site-packages/silero_vad/data/silero_vad.jit"
+            if installed_vad.is_file():
+                vad = installed_vad
+        self._check_path(vad, directory=False, required="asr_vad_model")
+        return model, aligner, vad
+
+    def asr_worker_python(self) -> Path | None:
+        if self.asr_provider not in {"qwen", "firered"}:
+            return None
+        frozen = getattr(sys, "frozen", False)
+        if frozen:
+            bundled = Path(sys.executable).resolve().parent / "runtimes" / self.asr_provider / "Scripts" / "python.exe"
+            if bundled.is_file():
+                return bundled.resolve()
+        name = f"{self.asr_provider}_python"
+        value = getattr(self, name)
+        if not isinstance(value, str):
+            raise ValueError(f"{name} phải là đường dẫn đến Python")
+        if not value.strip():
+            if frozen:
+                raise ValueError(f"Chưa cài môi trường Python cho {ASR_MODELS[self.asr_provider]}. Hãy cài lại bằng bộ cài SubShort.")
+            local = self.root / f".venv-{self.asr_provider}" / "Scripts" / "python.exe"
+            return local.resolve() if local.is_file() else None
+        self._check_path(value, directory=False, required=name)
+        path = (self.root / value).resolve()
+        if frozen and path == Path(sys.executable).resolve():
+            raise ValueError(f"{name} phải trỏ đến Python của môi trường ASR, không phải SubShort.exe")
+        return path
+
+    def _check_path(self, value: str | Path, *, directory: bool | None, required: str | None = None) -> None:
+        if not isinstance(value, (str, Path)) or not str(value).strip():
             raise ValueError(f"{required or 'path'} không được rỗng")
         path = self.root / value
         exists = path.exists() if directory is None else (path.is_dir() if directory else path.is_file())
         if not exists:
-            raise ValueError(f"Không tìm thấy đường dẫn: {path}")
+            raise ValueError(f"Không tìm thấy đường dẫn ({required or 'path'}): {path}")
 
     def _check_command(self, command: str) -> None:
         parts = shlex.split(command, posix=False) if isinstance(command, str) else []

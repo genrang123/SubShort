@@ -43,6 +43,15 @@ def test_each_reference_matches_independently_and_tolerates_edge_drift():
     assert metadata['source'] == 'mixed'
 
 
+def test_nested_speaker_captions_preserve_speaker_and_order():
+    references = [Segment(0, 8, 'uno dos tres cuatro cinco seis siete', '1', 'a'),
+                  Segment(1, 2, 'hola', '2', 'b')]
+    result, _ = build_captions(VOICE, references, 8, lambda _: [])
+    assert [(cue.source_id, cue.speaker_id) for cue in result] == [('1', 'a'), ('2', 'b'), ('1', 'a')]
+    assert result[1] == references[1]
+    assert result[-1].end == 8
+
+
 def test_fallback_preserves_cjk_punctuation_spaces_and_splits_six_words():
     text = '你好，世界！ one two three four five six seven.'
     reference = Segment(0, 12, text)

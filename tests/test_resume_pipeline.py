@@ -1,3 +1,4 @@
+import json
 import sys
 from types import SimpleNamespace
 import wave
@@ -5,8 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from subshort.media import MediaAdapter
-from subshort.app import Pipeline
+from subshort.pipeline import Pipeline
 from subshort.execution import check_cancelled
 from subshort.models import Settings
 from subshort.providers import Segment
@@ -29,14 +29,12 @@ def harness(tmp_path, monkeypatch):
         def normalize_clip(self, raw, output):
             counts["normalize"] += 1
             output.write_bytes(raw.read_bytes())
-        fit_clip = MediaAdapter.fit_clip
-        clip_frames = staticmethod(MediaAdapter.clip_frames)
         def timeline_audio(self, clips, starts, output, duration): output.write_bytes(b"timeline")
         mix_timeline_audio = timeline_audio
         def prepare_audio(self, source, output, *args): output.write_bytes(b"final")
         def render(self, source, audio, subtitles, output, *args, **kwargs): output.write_bytes(b"render")
         def validate_output(self, *args): pass
-    monkeypatch.setattr("subshort.app.MediaAdapter", Media)
+    monkeypatch.setattr("subshort.pipeline.MediaAdapter", Media)
 
     class ASR:
         def transcribe(self, *args):
@@ -50,13 +48,8 @@ def harness(tmp_path, monkeypatch):
         def translate(self, segments, language):
             counts["translate"] += 1
             return [Segment(s.start, s.end, s.text + language, s.source_id) for s in segments]
-        def shorten(self, segment, source, context, language, seconds):
-            control["shorten_calls"] = control.get("shorten_calls", 0) + 1
-            if control.get("uncertain"):
-                raise RuntimeError("response lost")
-            return Segment(segment.start, segment.end, "short", segment.source_id)
-    monkeypatch.setattr("subshort.app.ASRSession", lambda *args, **kwargs: ASR())
-    monkeypatch.setattr("subshort.app.OpenAITranslator", Translator)
+    monkeypatch.setattr("subshort.pipeline.ASRSession", lambda *args, **kwargs: ASR())
+    monkeypatch.setattr("subshort.pipeline.OpenAITranslator", Translator)
 
     class TTS:
         def voices(self): return [{"id": "Hải Đăng"}, {"id": "Trúc Ly"}]
@@ -68,10 +61,9 @@ def harness(tmp_path, monkeypatch):
                 check_cancelled()
             with wave.open(str(output), "wb") as stream:
                 stream.setparams((1, 2, 24000, 0, "NONE", "not compressed"))
-                frames = control.get("short_frames", 2400) if text == "short" else control.get("frames", 2400)
-                stream.writeframes(b"\0\0" * frames)
+                stream.writeframes(b"\0\0" * control.get("frames", 2400))
 
-    monkeypatch.setattr("subshort.app.TtsSession", lambda *args, **kwargs: TTS())
+    monkeypatch.setattr("subshort.pipeline.TtsSession", lambda *args, **kwargs: TTS())
     asr_model = tmp_path / "asr-model"; asr_model.mkdir()
     tts_model = tmp_path / "tts-model"; tts_model.mkdir()
     tts_cache = tmp_path / "tts-cache"; tts_cache.mkdir()
@@ -91,31 +83,8 @@ def harness(tmp_path, monkeypatch):
 
     return settings, counts, control, run
 
-def test_shortening_budget_survives_uncertain_request(tmp_path):
-    from subshort.artifacts import ArtifactCache
-    from subshort.providers import ProviderError
-    source = tmp_path / "source"; source.write_bytes(b"source")
-    cache = ArtifactCache(tmp_path, source, {})
-    dependencies = {"policy": "source-windows-v1", "text": "original"}
-    cache.shortening(dependencies, "0", begin=True)
-    resumed = ArtifactCache(tmp_path, source, {})
-    with pytest.raises(ProviderError, match="không tự gửi lại"):
-        resumed.shortening(dependencies, "0")
-    with pytest.raises(ProviderError, match="không tự gửi lại"):
-        resumed.shortening(dependencies, "0", begin=True)
-
-
-def test_completed_shortening_reused_with_identical_dependencies(tmp_path):
-    from subshort.artifacts import ArtifactCache
-    source = tmp_path / "source"; source.write_bytes(b"source")
-    cache = ArtifactCache(tmp_path, source, {})
-    dependencies = {"policy": "source-windows-v1", "text": "original"}
-    cache.shortening(dependencies, "0", begin=True)
-    cache.shortening(dependencies, "0", result=Segment(0, 1, "short", "0"))
-    assert ArtifactCache(tmp_path, source, {}).shortening(dependencies, "0") == "short"
 
 def test_pipeline_preserves_three_source_turns(tmp_path, monkeypatch):
-    import json
     settings, counts, control, run = harness(tmp_path, monkeypatch)
     control["duration"] = 20
     control["segments"] = [Segment(0, 1, "A"), Segment(5.40, 6, "B"), Segment(12.86, 14, "C")]
@@ -128,33 +97,53 @@ def test_pipeline_preserves_three_source_turns(tmp_path, monkeypatch):
     assert [row["actual_start_seconds"] for row in rows] == [round(s.start / .7 * 24000) / 24000 for s in control["segments"]]
 
 
-@pytest.mark.parametrize("uncertain,short_frames", [(False, 2400), (False, 96000), (True, 2400)])
-def test_pipeline_shortening_is_once_across_resume(tmp_path, monkeypatch, uncertain, short_frames):
+def test_pipeline_delays_next_cue_without_overlap(tmp_path, monkeypatch):
+    settings, _, control, run = harness(tmp_path, monkeypatch)
+    settings.slow_speed = 1
+    control["segments"] = [Segment(0, .075, "first"), Segment(.075, .2, "second")]
+    control["frames"] = 3600
+
+    job = run()
+    assert job.status == "done", job.error
+    rows = json.loads((tmp_path / "output_artifacts/resume/timeline.json").read_text())
+    assert rows[0]["actual_end_seconds"] == rows[1]["actual_start_seconds"] == .15
+    assert rows[1]["delay_seconds"] == .075
+    assert job.metadata["timing"]["final_duration_seconds"] == 4
+
+
+def test_overflow_resume_keeps_reviewed_text_without_extra_translation(tmp_path, monkeypatch):
     settings, counts, control, run = harness(tmp_path, monkeypatch)
-    control.update(frames=144000, short_frames=short_frames, uncertain=uncertain)
+    settings.slow_speed = 1
+    settings.final_speed = 1.25
+    control["frames"] = 72000
     first = run()
-    assert first.status == ("done" if not uncertain and short_frames == 2400 else "failed"), first.error
-    calls = control["shorten_calls"]
-    second = run()
-    assert control["shorten_calls"] == calls
-    assert second.status == ("done" if not uncertain and short_frames == 2400 else "failed"), second.error
+    assert first.status == "done", first.error
+    first.config = {"review_translation": {"0": "Lời đã duyệt, không rút gọn"}}
+    reviewed = run()
+    assert reviewed.status == "done", reviewed.error
 
+    work = tmp_path / "output_artifacts/resume"
+    translation = work / "translation_full.srt"
+    original_srt = translation.read_bytes()
+    rows = json.loads((work / "timeline.json").read_text(encoding="utf-8"))
+    expected_text = ["Lời đã duyệt, không rút gọn", "secondvi"]
+    assert [row["text"] for row in rows] == expected_text
+    assert [text for text, _ in control["tts_calls"][-2:]] == ["secondvi", expected_text[0]]
+    assert expected_text[0] in original_srt.decode("utf-8-sig")
+    assert [row["duration_seconds"] for row in rows] == [3, 3]
+    assert rows[0]["actual_end_seconds"] == rows[1]["actual_start_seconds"] == 3
+    assert rows[1]["actual_end_seconds"] == 6
+    assert reviewed.metadata["timing"]["final_duration_seconds"] == 4.8
+    assert reviewed.metadata["timing"]["freeze_seconds"] == 1.6
+    assert counts["translate"] == 1 and counts["tts"] == 3
 
-def test_shortening_window_and_voice_changes_use_new_budget(tmp_path, monkeypatch):
-    settings, counts, control, run = harness(tmp_path, monkeypatch)
-    control.update(frames=144000, short_frames=2400)
-    assert run().status == "done"
-    assert control["shorten_calls"] == 2
-    assert run().status == "done"
-    assert control["shorten_calls"] == 2
-    settings.slow_speed = .8
-    assert run().status == "done"
-    assert control["shorten_calls"] == 4
-    settings.tts_voice = "another"
-    assert run().status == "done"
-    assert control["shorten_calls"] == 6
-
-
+    resumed = run()
+    assert resumed.status == "done", resumed.error
+    assert counts["translate"] == 1 and counts["tts"] == 3
+    assert {"translate", "tts"} <= set(resumed.metadata["reused_stages"])
+    assert [row["text"] for row in resumed.metadata["review_translation"]] == expected_text
+    assert translation.read_bytes() == original_srt
+    assert json.loads((work / "timeline.json").read_text(encoding="utf-8")) == rows
 
 
 def test_cancel_resume_reuses_completed_stages_and_clip(tmp_path, monkeypatch):
@@ -236,8 +225,7 @@ def test_review_edits_resume_from_completed_job(tmp_path, monkeypatch):
 
 @pytest.mark.parametrize("resplit,unknown_voice", [(False, False), (True, False), (False, True)])
 def test_persisted_speaker_review_dispatches_two_preset_voices(tmp_path, monkeypatch, resplit, unknown_voice):
-    import json
-    from subshort.diarization import SpeakerTurn, review_fingerprint, speaker_windows
+    from subshort.diarization import SpeakerTurn, review_fingerprint
     from subshort.models import Job
     from subshort.providers import FatalProviderError
     from subshort.queue import JobQueue
@@ -292,10 +280,10 @@ def test_persisted_speaker_review_dispatches_two_preset_voices(tmp_path, monkeyp
     timeline = json.loads((tmp_path / "output_artifacts/resume/timeline.json").read_text(encoding="utf-8"))
     assert [row["speaker_id"] for row in timeline] == ["speaker-1", "speaker-2"]
     assert [row["source_id"] for row in timeline] == (["0.0", "0.1"] if resplit else ["0", "1"])
-    aligned = [Segment(0, 1, "first", "0", "speaker-1"), Segment(2, 3, "second", "1", "speaker-2")]
-    windows = speaker_windows(aligned, 4, settings.slow_speed)
-    assert [row["actual_start_seconds"] for row in timeline] == [start / 24000 for start, _ in windows]
-    assert [row["window_end_seconds"] for row in timeline] == [end / 24000 for _, end in windows]
+    assert [row["source_start_seconds"] for row in timeline] == [0, 2]
+    assert [row["actual_start_seconds"] for row in timeline] == [0, round(2 / settings.slow_speed * 24000) / 24000]
+    assert [row["duration_seconds"] for row in timeline] == [.1, .1]
+    assert [row["delay_seconds"] for row in timeline] == [0, 0]
     assert persisted.metadata["segments"] == 2
     raw = (tmp_path / "output_artifacts/resume/transcript_raw.srt").read_text(encoding="utf-8")
     assert ("two speakers" if resplit else "first") in raw
@@ -308,7 +296,7 @@ def test_custom_voice_reference_arguments_match_provider(tmp_path, monkeypatch, 
     settings.tts_provider = provider
     settings.tts_custom_voice = "custom"
     reference = {"provider": provider, "path": str(tmp_path / "reference.wav"), "ref_text": "reference words"}
-    monkeypatch.setattr("subshort.app.VoiceRegistry", lambda *args: SimpleNamespace(resolve=lambda _: reference))
+    monkeypatch.setattr("subshort.pipeline.VoiceRegistry", lambda *args: SimpleNamespace(resolve=lambda _: reference))
     job = run()
     assert job.status == "done", job.error
     expected = {"ref_audio": reference["path"]}

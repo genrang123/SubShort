@@ -42,18 +42,7 @@ def test_validate_rejects_invalid_duration(duration):
 
 
 
-SEGMENTS = [Segment(0, 2, "one"), Segment(1, 3, "two")]
-
-def test_shortening_preserves_requested_source_id_and_context(monkeypatch):
-    requests = install_translation(monkeypatch, {"items": [{"id": "source-7", "text": "ngắn"}]})
-    source = Segment(5, 6, "source", "source-7")
-    current = Segment(5, 6, "long translation", "source-7")
-    result = OpenAITranslator("key").shorten(current, source, [source], "vi", 1.5)
-    assert result == Segment(5, 6, "ngắn", "source-7")
-    payload = requests[0]
-    prompt = payload["messages"][0]["content"]
-    assert "1.500000" in prompt and "source-7" in prompt and "long translation" in prompt
-
+SEGMENTS = [Segment(0, 2, "one"), Segment(1, 2.25, "two")]
 
 
 def install_translation(monkeypatch, answer, on_response=None):
@@ -72,14 +61,20 @@ def install_translation(monkeypatch, answer, on_response=None):
 
 def test_translation_ids_reorder_response_without_changing_times(monkeypatch):
     requests = install_translation(monkeypatch, {"items": [{"id": "1", "text": " hai "}, {"id": "0", "text": "một"}]})
-    assert OpenAITranslator("key").translate(SEGMENTS, "vi") == [Segment(0, 2, "một"), Segment(1, 3, "hai")]
+    assert OpenAITranslator("key").translate(SEGMENTS, "vi") == [Segment(0, 2, "một"), Segment(1, 2.25, "hai")]
     payload = requests[0]
     assert payload["response_format"]["type"] == "json_schema"
     schema = payload["response_format"]["json_schema"]
     assert schema["strict"] is True
     assert schema["schema"]["additionalProperties"] is False
+    item_schema = schema["schema"]["properties"]["items"]["items"]
+    assert set(item_schema["properties"]) == set(item_schema["required"]) == {"id", "text"}
+    assert item_schema["additionalProperties"] is False
     content = payload["messages"][0]["content"]
-    assert json.loads(content.split("\n", 1)[1]) == {"items": [{"id": "0", "text": "one"}, {"id": "1", "text": "two"}]}
+    assert json.loads(content.split("\n", 1)[1]) == {"items": [
+        {"id": "0", "text": "one", "source_duration_seconds": 2},
+        {"id": "1", "text": "two", "source_duration_seconds": 1.25},
+    ]}
 
 
 @pytest.mark.parametrize("answer", [

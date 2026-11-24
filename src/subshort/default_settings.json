@@ -2,6 +2,8 @@
   "ffmpeg": "ffmpeg",
   "ffprobe": "ffprobe",
   "asr_provider": "local",
+  "qwen_python": "",
+  "firered_python": "",
   "asr_model": "",
   "asr_device": "cpu",
   "asr_aligner": "",

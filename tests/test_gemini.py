@@ -9,7 +9,7 @@ from subshort.execution import Cancelled, Execution
 from subshort.providers import FatalProviderError, GeminiTranslator, OpenAITranslator, ProviderError, Segment
 
 
-SEGMENTS = [Segment(0, 2, "one"), Segment(1, 3, "two")]
+SEGMENTS = [Segment(0, 2, "one"), Segment(1, 2.25, "two")]
 KEY = "fake-gemini-secret"
 ANSWER = {"items": [{"id": "1", "text": " hai "}, {"id": "0", "text": "một"}]}
 
@@ -43,7 +43,7 @@ def fake_post(monkeypatch):
 
 def test_gemini_preserves_auth_schema_ids_and_timing(fake_post):
     requests = fake_post(success())
-    assert GeminiTranslator(KEY).translate(SEGMENTS, "vi") == [Segment(0, 2, "một"), Segment(1, 3, "hai")]
+    assert GeminiTranslator(KEY).translate(SEGMENTS, "vi") == [Segment(0, 2, "một"), Segment(1, 2.25, "hai")]
     request = requests[0]
     assert request["url"] == "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions"
     assert request["headers"] == {"Authorization": f"Bearer {KEY}", "Content-Type": "application/json"}
@@ -57,7 +57,10 @@ def test_gemini_preserves_auth_schema_ids_and_timing(fake_post):
     assert item_schema["required"] == ["id", "text"]
     assert item_schema["additionalProperties"] is False
     prompt = payload["messages"][0]["content"]
-    assert json.loads(prompt.split("\n", 1)[1]) == {"items": [{"id": "0", "text": "one"}, {"id": "1", "text": "two"}]}
+    assert json.loads(prompt.split("\n", 1)[1]) == {"items": [
+        {"id": "0", "text": "one", "source_duration_seconds": 2},
+        {"id": "1", "text": "two", "source_duration_seconds": 1.25},
+    ]}
 
 
 @pytest.mark.parametrize("translator,model", [(GeminiTranslator, "gemini-custom"), (OpenAITranslator, "gpt-custom")])

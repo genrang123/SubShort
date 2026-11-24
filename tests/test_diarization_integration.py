@@ -1,10 +1,9 @@
-from pathlib import Path
-import json
+import struct
 import wave
 
 import pytest
 
-from subshort.diarization import SpeakerTurn, align_segments, review_fingerprint, speaker_windows
+from subshort.diarization import SpeakerTurn, align_segments, review_fingerprint
 from subshort.media import MediaAdapter
 from subshort.providers import Segment, build_timeline, timeline_alignment
 
@@ -15,22 +14,35 @@ def _wav(path, frames=2400, value=1000):
         stream.writeframes((value.to_bytes(2, "little", signed=True)) * frames)
 
 
-def test_speaker_lanes_allow_overlap_and_mixer(tmp_path):
-    first, second, output = (tmp_path / name for name in ("a.wav", "b.wav", "mix.wav"))
+def test_speaker_lanes_delay_only_same_speaker_and_mix_overlaps(tmp_path):
+    first, second, third, output = (tmp_path / name for name in ("a.wav", "b.wav", "c.wav", "mix.wav"))
     _wav(first, 24000, 100)
     _wav(second, 24000, 200)
-    segments = [Segment(0, 1, "A", "1", "speaker-1"), Segment(0.4, 1.4, "B", "2", "speaker-2")]
-    windows = [(0, 24000), (9600, 33600)]
-    timeline = build_timeline(segments, [first, second], 1, windows=windows)
-    assert timeline[1]["actual_start_seconds"] < timeline[0]["actual_end_seconds"]
-    alignment = timeline_alignment(timeline, 2, 1, 1, allow_overlap=True)
-    MediaAdapter("ffmpeg", "ffprobe").mix_timeline_audio([first, second], [0, 0.4], output, alignment["target_duration_seconds"])
-    import struct
+    _wav(third, 24000, 400)
+    segments = [Segment(0, .3, "A", "1", "speaker-1"), Segment(.4, .6, "B", "2", "speaker-2"),
+                Segment(.8, 1, "C", "3", "speaker-1")]
+    timeline = build_timeline(segments, [first, second, third], source_duration=1.5, multi_speaker=True)
+    starts = [row["actual_start_seconds"] for row in timeline]
+    assert starts == [0, .4, 1]
+    assert [row["delay_seconds"] for row in timeline] == [0, 0, .2]
+    alignment = timeline_alignment(timeline, 1.5, 1, 1, allow_overlap=True)
+    assert alignment["target_duration_seconds"] == 2
+    MediaAdapter().mix_timeline_audio([first, second, third], starts, output, alignment["target_duration_seconds"])
     with wave.open(str(output), "rb") as stream:
         samples = struct.unpack(f"<{stream.getnframes()}h", stream.readframes(stream.getnframes()))
     assert samples[2400] == 100
     assert samples[12000] == 300
-    assert samples[28800] == 200
+    assert samples[28800] == 600
+    assert samples[36000] == 400
+    assert len(samples) == 48000
+
+
+def test_speaker_lanes_require_a_speaker_id(tmp_path):
+    clip = tmp_path / "a.wav"
+    _wav(clip)
+    with pytest.raises(ValueError, match="thiếu người nói"):
+        build_timeline([Segment(0, 1, "A")], [clip], multi_speaker=True)
+
 
 def test_review_fingerprint_changes_when_transcript_changes():
     turns = [SpeakerTurn(0, 1, "speaker-1", "resolved")]

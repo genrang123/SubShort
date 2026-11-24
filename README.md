@@ -24,9 +24,11 @@ SubShort/
 
 Source dùng convention `src` layout; giữ namespace `subshort.*` và worker trong package để chạy bằng `python -m`. Không chia thêm tầng thư mục khi chưa cần. Tài liệu: [backlog parity](docs/PLAN_PARITY_DICHVIDEO.md), [glossary](docs/GLOSSARY.md).
 
+`app.py` chứa cửa sổ PySide6 + Qt Widgets. Hộp thoại dùng widget Qt chuẩn, không cần bộ widget bên thứ ba. `pipeline.py`, CLI chẩn đoán và các worker không khởi tạo Qt.
+
 Model/runtime (`ModelASR/`, `models/`, `QwenRuntime/`), media mẫu `example/`, `.venv*`, `build/`, `dist/` và artifact có sẵn giữ nguyên vị trí để không phá cấu hình hoặc bằng chứng cũ. Chúng không phải source package; file sinh ra và credential local được loại khỏi Git qua `.gitignore`.
 
-Sau khi chuyển từ layout cũ, chạy lại `python -m pip install --no-deps -e .` trong từng môi trường đã cài editable SubShort (ứng dụng và worker). Cấu hình/queue/output của bản source vẫn nằm ở gốc dự án, không chuyển vào `src/`. Bản exe có sẵn không đổi; cần build lại để nhận source mới.
+Nếu đang dùng môi trường cũ, chạy lại `python -m pip install -e .` trong môi trường chạy ứng dụng để cài `PySide6-Essentials`. Cấu hình, hàng đợi và output giữ nguyên vị trí và định dạng; bản `.exe` có sẵn chỉ đổi giao diện khi build lại.
 
 Kiểm thử: cài `pytest` vào `.venv`, rồi chạy `.\.venv\Scripts\python -m pytest`. Cài editable trước khi chạy CLI từ ngoài checkout; không dựa vào thư mục hiện tại để import package.
 
@@ -50,8 +52,13 @@ Extra `separation` khai báo thêm `audioread`: audio-separator 0.48.0 import pa
 Extra `local` giới hạn `av<19`: faster-whisper 1.2.1 còn gọi `av.open(metadata_errors=...)`, tham số đã bị PyAV 19 loại bỏ. Cài lại `python -m pip install -e ".[local]"` nếu gặp lỗi decoder này.
 
 VieNeu CPU ONNX đã synthesize hai câu Việt tự soạn qua worker offline, reuse session và xác nhận diagnostic CPU khi preference CUDA. VieNeu CUDA PyTorch cũng đã synthesize thật qua worker với cùng snapshot/cache: `output/gpu-smoke/acceptance.json` và `vieneu_cuda.wav` ghi RTX 5060 Ti, `backend=pytorch`, `device=cuda`, dtype `torch.bfloat16`, 34.560 mẫu ở 48 kHz. Runtime đã kiểm chứng là torch/torchaudio `2.11.0+cu128`, transformers `4.57.6`; VieNeu metadata khai báo CUDA extra torch/torchaudio `2.8.0`, nên bản 2.11.0 chỉ là cấu hình đã smoke trên máy này, không phải tương thích upstream được bảo đảm. Nếu cài lại, giữ các gói CUDA cùng một bộ và kiểm tra inference thật; không chỉ dựa vào nhãn device. Đây là proof thực thi; chưa nghiệm thu nghe, chất lượng tiếng Trung hoặc mọi voice. OmniVoice chưa chạy vì chưa có consent giấy phép và snapshot/runtime; không tự tải hoặc chấp thuận thay người dùng.
-Qwen CPU đã smoke offline với `qwen-asr==0.0.6`, `transformers==4.57.6`, `silero-vad==6.2.3`, `torch==2.6.0` và `torchaudio==2.6.0` trong môi trường riêng. Cặp torch/torchaudio mới hơn ở lần thử này kéo `torchcodec` rồi lỗi DLL Windows; không coi đó là cấu hình đã kiểm chứng. Cấu hình đường dẫn model ASR, forced aligner và Silero VAD local; chạy ứng dụng bằng Python của môi trường Qwen vì ASR không dùng `tts_python`.
-FireRed AED-L CPU đã smoke qua Silero VAD với SDK revision `834635e4cf277ed8ca92049fc375b17c3dc20748`, torch/torchaudio 2.5.1 CPU, numpy 1.26.4, transformers 4.46.3, peft 0.13.2, accelerate 1.1.1 và silero-vad 6.2.3. Đặt checkout SDK trên `PYTHONPATH` của Python chạy ứng dụng. Resolver mới không pin có thể nâng torch và làm upstream checkpoint loader lỗi. Loader torch 2.5.1 dùng pickle: chỉ mở model có nguồn tin cậy; chưa có smoke FireRed CUDA/tiếng Trung.
+Trong **Cài đặt → Nhận dạng**, chỉ chọn **Model** và thiết bị CPU/CUDA. Model nằm trong `ModelASR/<tên model>` cạnh EXE (hoặc tại gốc dự án khi chạy source). Qwen dùng thêm `ModelASR/Qwen3-ForcedAligner-0.6B`; Qwen và FireRed dùng `ModelASR/silero_vad.jit` hoặc tệp VAD trong môi trường Python tương ứng. Thêm job mới để lấy cấu hình mới.
+
+Bố cục dành cho bộ cài Windows: tạo môi trường Qwen và FireRed tại `runtimes/qwen/` và `runtimes/firered/` cạnh EXE, mỗi môi trường có `Scripts/python.exe`. EXE tự tìm chúng, không cần nhập đường dẫn; nếu chưa có, đường dẫn lưu từ cấu hình cũ vẫn được dùng. Khi chạy source, ứng dụng có thể dùng `.venv-qwen/` hoặc `.venv-firered/` tại gốc dự án. Bố cục này không tự cài hay tải runtime/model.
+
+Môi trường Qwen cần `qwen-asr`, PyTorch/torchaudio và `silero-vad`. Môi trường FireRed cần SDK `fireredasr` và các dependency tương ứng; nếu dùng checkout SDK local, đăng ký đường dẫn checkout trong tệp `.pth` dưới `Lib/site-packages` của môi trường FireRed. Worker chạy Python ở chế độ cô lập nên không đọc `PYTHONPATH`. Chỉ dùng model FireRed từ nguồn tin cậy. Model và môi trường Python không nằm trong EXE.
+
+Đã kiểm tra `dist/asr/SubShort.exe` bằng `--state-dir <thư-mục-cấu-hình> --diagnose-asr <audio.wav>`: Qwen3-ASR-0.6B và FireRed AED-L chạy CPU offline, đều khớp transcript tham chiếu của mẫu `BAC009S0764W0121.wav` (13 đoạn Qwen, 1 đoạn FireRed). Kiểm tra này không chạy giao diện, dịch hay xuất video.
 
 Upload Drive cần extra `drive`: `python -m pip install -e ".[drive]"`. Cài dependency không cấp quyền upload; mỗi lượt vẫn cần xác nhận riêng. Không đưa service-account JSON vào package.
 
@@ -60,6 +67,8 @@ Upload Drive cần extra `drive`: `python -m pip install -e ".[drive]"`. Cài de
 Trong **Cài đặt API**, chọn dịch vụ `openai_compatible`, nhập **Base URL**, **Model ID** và key ở dòng **OpenAI-compatible API key**. Ví dụ Base URL: `http://127.0.0.1:1234/v1` hoặc `https://provider.example/v1`. Ứng dụng tự nối `/chat/completions`; không nhập cả endpoint này. Base URL không được chứa user/password, query hoặc fragment. Chỉ dùng HTTP cho server local/tin cậy; HTTP không mã hóa key và nội dung.
 
 Key được bảo vệ bằng Windows DPAPI, không ghi vào snapshot job. Để ô key trống để giữ key hiện có; chọn Xóa key để xóa. Server local không yêu cầu xác thực có thể dùng key giả như `local`. Thêm job mới để dùng cấu hình vừa lưu. Provider phải hỗ trợ `response_format: json_schema` và trả nội dung Chat Completions; không tự fallback sang dịch vụ khác khi lỗi. Thay Base URL làm mất hiệu lực cache bản dịch. Lựa chọn này chỉ áp dụng dịch văn bản, không đổi provider vision.
+
+Request dịch giữ `response_format: json_schema` và gửi `stream: false`; provider phải trả một phản hồi JSON Chat Completions hoàn chỉnh, không phải luồng SSE.
 
 HTTP dịch/vision dùng timeout 120 giây mỗi lần gọi (cả request và process worker), tối đa 3 lần thử cho lỗi tạm thời; vẫn có thể hủy khi đang chờ. Request dịch 34 câu của `example1.mp4` đã mất 35,62 giây trong lần kiểm tra provider, vượt giới hạn 30 giây cũ.
 
@@ -90,7 +99,8 @@ Dịch gửi transcript tới provider đã chọn; Edge TTS gửi bản dịch 
 - Hiện có ba mode `subtitle_dub`, `subtitle` và `dub`; ASR `local`/`qwen`/`firered`, dịch `openai`/`gemini`, TTS `edge`/`vieneu`/`omnivoice`/`none`. Mode/provider khác bị chặn thay vì chạy nhánh thay thế âm thầm. FFmpeg/ffprobe và đường dẫn runtime/model của nhánh được chọn phải tồn tại; `separate_background` chỉ yêu cầu model separator khi thật sự trộn nền.
 - Job mới lưu snapshot cấu hình ngay khi thêm. Job lịch sử chưa có snapshot lấy cấu hình khi chạy lần đầu nhưng giữ target/mode của job cũ. Retry dùng lại snapshot; đổi settings chỉ áp dụng cho job mới. Snapshot không chứa API key hoặc `extra`; credential hiện tại được lấy khi bắt đầu chạy.
 - Job có trạng thái `queued`, `running`, `done`, `failed`, `cancelled`, trường `stage` và `progress` từ 0–100%. Pipeline cập nhật snapshot ở các mốc download/probe/ASR/dịch/TTS/mix/render; hủy giữ stage/progress và intermediate để retry/resume kiểm tra manifest. Retry xóa output/error/progress/metadata cũ.
-- Lời Việt bắt đầu theo mốc nguồn chia `slow_speed`, kết thúc trước đoạn kế tiếp (đoạn cuối trước hết video). Clip ngắn giữ nhịp tự nhiên; clip dài tăng tốc giữ cao độ tối đa 1,4×. Nếu vẫn dài, yêu cầu provider rút gọn giữ ý một lần rồi tạo giọng lại; vẫn không vừa thì job lỗi, không cắt tiếng, dời câu sau hoặc kéo hình để bù. Phụ đề theo clip đã xử lý; `final_speed` áp đồng bộ hình/tiếng/phụ đề. Rút gọn có thể phát sinh phí API và cần kiểm tra nội dung.
+- Lời lồng tiếng ưu tiên bắt đầu theo mốc nguồn chia `slow_speed`. Giữ nguyên clip TTS, không ép tăng tốc hay gọi dịch lại để rút gọn. Nếu một câu còn đang đọc, câu tiếp theo cùng người nói sẽ chờ; nếu lời vượt hết video, giữ khung hình cuối đến khi lời kết thúc. `final_speed` vẫn áp đồng bộ cho hình, tiếng và phụ đề.
+- Trong **Cài đặt → Chung**, **Tốc độ hình để canh lời và phụ đề** (`slow_speed`) không đổi tốc độ giọng lồng tiếng. **Hệ số tốc độ khi xuất (hình, tiếng, phụ đề)** (`final_speed`) áp lên cả ba; ví dụ `0.8 × 1.25 = 1.0` giữ tốc độ hình gốc. Rê chuột lên tên mục hoặc ô nhập để xem giải thích.
 
 ## Queue, batch và hủy
 
@@ -114,15 +124,16 @@ Dịch gửi transcript tới provider đã chọn; Edge TTS gửi bản dịch 
 - Probe duration/video/audio trước ASR. Nguồn không audio hoặc ASR trả danh sách rỗng được sao chép nguyên byte thành output `*_preserved`, ghi lý do `no_audio`/`no_speech`; không gọi dịch/TTS/render, không áp tốc độ. Đây là nhánh bảo toàn nguồn, không phải phát hiện im lặng bằng ngưỡng năng lượng.
 - ASR phải trả text không rỗng và timestamp hữu hạn, không âm, start < end, trong duration nguồn, start/end có thứ tự; cue overlap vẫn được phép. Dữ liệu sai bị chặn trước dịch, không ép kiểu hay bỏ row âm thầm.
 - Dịch dùng JSON schema và ID: map theo ID thay vì vị trí, yêu cầu đủ/duy nhất ID và text không rỗng. Response thiếu/trùng/thừa ID gây lỗi; không lấy text nguồn làm fallback. Một request đang chạy tại một thời điểm, theo chính sách timeout/retry/cancel ở mục Credential và request. Hủy hoặc response sai không công bố output thành công.
+- Prompt dịch gửi thời lượng từng câu nguồn (`source_duration_seconds`) làm gợi ý nhịp nói, không phải giới hạn. Ưu tiên lời tự nhiên, gọn và giữ nghĩa. Bản dịch cache theo prompt cũ sẽ được dịch lại khi chạy lại job.
 
 ## Timeline và publish
 
-- Clip TTS được chuẩn hóa mono PCM16 24 kHz và đo bằng số frame thật. Mỗi clip giữ mốc nguồn / `slow_speed`, fit trong cửa sổ bằng tempo tối đa 1,4×; không đẩy start theo clip trước hoặc kéo/freeze hình để che overrun. Raw TTS tách clip fit để resume không áp tempo hai lần.
-- `timeline.json` giữ source ID/bounds, cửa sổ, duration raw/fit, tempo và text thực đọc; `pipeline_timing.json` dùng policy `source-windows-v1`. Nhiều speaker dùng cửa sổ từng lane và mix PCM tại mốc nguồn; nhãn/voice map thiếu hoặc chưa duyệt bị chặn.
-- `translated_source.srt` giữ timestamp nguồn; caption theo clip cuối / `final_speed`. Không TTS thì chuyển timestamp bằng `slow_speed * final_speed`. Audio và hình cùng áp tốc độ cuối; không dùng `-shortest` để cắt phần dư.
+- Clip TTS được chuẩn hóa mono PCM16 24 kHz và đo bằng số frame thật. Các câu của một người không chồng nhau; nhiều người có thể nói đồng thời. Nhãn/voice map thiếu hoặc chưa duyệt vẫn bị chặn.
+- `timeline.json` giữ ID và mốc nguồn, mốc dự kiến và thực tế, thời lượng clip, lời thực đọc và độ trễ (`delay_seconds`). `pipeline_timing.json` ghi policy `unbounded-dubbing-v1` và số giây giữ khung hình cuối sau `final_speed` (`freeze_seconds`).
+- `translation_full.srt` giữ timestamp nguồn; phụ đề xuất bám clip thực tế sau `final_speed`. Không TTS thì chuyển timestamp bằng `slow_speed * final_speed`. Không dùng `-shortest` để cắt phần dư.
 - Video thành phẩm được lưu trực tiếp trong thư mục output đã chọn, tên `<nguồn>_<job-id>_translated.mp4` (hoặc `_preserved` khi giữ nguyên nguồn). Audio, phụ đề, cache, log, video tải về và file render tạm nằm trong thư mục cùng cấp `<output>_artifacts/<job-id>/`; mặc định là `output_artifacts/`. Giữ thư mục artifact để resume và duyệt speaker. Không tự di chuyển các kết quả cũ; job dùng layout cũ khi chạy lại sẽ tạo cache ở layout mới.
 - Render vào `*.pending.mp4`, ffprobe kiểm tra video/audio và duration trước khi atomic replace file cuối. Lỗi hoặc hủy xóa file pending, không báo done. Intermediate được giữ để chẩn đoán; file cuối có sẵn từ lần chạy cũ không được xem là kết quả của lần lỗi mới.
-- Chọn job rồi mở duyệt transcript/bản dịch/speaker để sửa text theo ID; giữ nguyên timestamp/ID. Lưu sẽ xếp job chạy lại: sửa transcript dịch lại, sửa bản Việt tạo lại giọng phụ thuộc. Bản dịch đầy đủ giữ riêng text rút gọn thực đọc. Không duyệt khi batch đang chạy.
+- Chọn job rồi mở duyệt transcript/bản dịch/speaker để sửa text theo ID; giữ nguyên timestamp/ID. Lưu sẽ xếp job chạy lại: sửa transcript dịch lại, sửa bản dịch tạo lại clip giọng tương ứng. Không duyệt khi batch đang chạy.
 - Bản duyệt transcript/bản dịch/speaker được giữ khi prepare/resume job. Voice map nhiều người có thể dùng UUID giọng custom hoặc ID preset VieNeu do worker trả về (ví dụ `Hải Đăng`, `Trúc Ly`); ID không tồn tại bị chặn. Cue tách lại có ID con riêng để cache/TTS không dùng nhầm bản dịch.
 - Diarization cần interpreter và model pyannote đã provision local cùng quyền sử dụng phù hợp; không tự tải model/nhận license. Tích hợp review/voice map/lane đã có, nhưng chưa nghiệm thu nhận diện hai người và nhiều giọng thật trên video mẫu.
 - Máy phát triển đã provision Community-1 tại `models/speaker-diarization-community-1`, worker `.venv-diarization/Scripts/python.exe`, `diarization_device="cuda"`. Runtime riêng: pyannote.audio 4.1.0, torch/torchaudio 2.11.0+cu128, torchcodec 0.11.0, pytorch-metric-learning 2.9.0 (`pip check` sạch). Worker tắt telemetry pyannote; caller ép Hugging Face offline. Không bật `multi_speaker` mặc định: người dùng vẫn cần duyệt nhãn và gán voice cho từng speaker.
@@ -137,6 +148,7 @@ Dịch gửi transcript tới provider đã chọn; Edge TTS gửi bản dịch 
 - Dịch qua OpenAI/Gemini.
 - Phụ đề SRT/ASS.
 - TTS Edge hoặc session local VieNeu/OmniVoice; voice preset/custom được lưu trong settings.
+- Cửa sổ **Giọng nói** hiển thị ngay các giọng thu đã lưu. Với VieNeu, bấm **Tải giọng preset** để khởi động model và tải danh sách trong nền; vẫn chọn được giọng thu, và đóng cửa sổ sẽ hủy lượt tải đang chạy. OmniVoice không có giọng preset.
 - Trộn audio, giữ nhạc nền, tách nền tùy chọn qua worker riêng.
 - Queue persistent, resume, cancel, output profile và lịch sử.
 - Cấu hình API được bảo vệ bằng Windows DPAPI; không commit credential hay khóa thật.
@@ -144,20 +156,36 @@ Dịch gửi transcript tới provider đã chọn; Edge TTS gửi bản dịch 
 - ASS dùng Encoding=-1 của libass để giữ thứ tự Arabic/Hebrew qua các token karaoke; đã xem render RTL, mixed Latin/numbers và multiline. Không bảo đảm cùng cách hiển thị trong VSFilter hoặc mọi trình phát ASS ngoài.
 - Upload Google Drive tùy chọn qua adapter, credentials không đi kèm project.
 
+## Bộ cài Windows x64 offline
+
+Bộ cài Inno Setup cài theo người dùng, mặc định vào `%LOCALAPPDATA%\Programs\SubShort`, và tạo shortcut Start Menu. Bao gồm FFmpeg/ffprobe và `faster-whisper-small` CPU; không cần cài Python, không sửa `PATH` hệ thống. Nâng cấp hoặc gỡ cài đặt không xóa dữ liệu ứng dụng trong `%LOCALAPPDATA%\SubShort`. Không kèm Qwen, FireRed hay CUDA.
+
+Khi chạy bộ cài, chọn **Tiếng Việt** (mặc định) hoặc **English**. Lựa chọn này chỉ áp dụng cho bộ cài, không đổi ngôn ngữ hay cấu hình trong SubShort. Bản dịch tiếng Việt của Inno Setup được lưu trong `packaging/languages/` ([nguồn](https://github.com/jrsoftware/issrc/blob/5e6e7b7def7ee1ffcaa017c62589a150a05376a5/Files/Languages/Unofficial/Vietnamese.isl)).
+
+Khi phát hiện `%LOCALAPPDATA%\SubShort`, bộ cài hỏi **Ghi đè chương trình, giữ dữ liệu cũ** (mặc định) hoặc **Cài như mới, sao lưu dữ liệu cũ**. Cài như mới chuyển cả thư mục dữ liệu sang `%LOCALAPPDATA%\SubShort.backup-YYYYMMDD-HHMMSS` sau khi cài xong file chương trình; lần mở tiếp theo dùng cấu hình mặc định và lịch sử trống. Kết quả lưu trong thư mục dữ liệu cũ nằm trong bản sao lưu; các tệp bên ngoài không bị thay đổi. Cài silent luôn giữ dữ liệu cũ.
+
+Để build, chuẩn bị `.venv` với `.[local]` và PyInstaller, Inno Setup 6, bản FFmpeg Windows tĩnh của Gyan, và model Whisper Small trong `ModelASR/` (thư mục `faster-whisper-small` hoặc snapshot Hugging Face đã cache):
+
+```powershell
+.\packaging\build-installer.ps1 -FFmpegDir 'C:\tools\ffmpeg' -ISCC 'C:\tools\Inno Setup 6\ISCC.exe'
+```
+
+Kết quả: `dist/installer/SubShort-<version>-Windows-x64-Setup.exe`. Bản build nội bộ chưa ký số. Trước khi phân phối công khai, kiểm tra nghĩa vụ phân phối mã nguồn tương ứng của FFmpeg GPL và thử cài trên Windows sạch.
+
 ## Build Windows
 
 ```powershell
 .\.venv\Scripts\python -m pip install pyinstaller
-.\.venv\Scripts\pyinstaller packaging/subshort.spec
+.\.venv\Scripts\python -m PyInstaller --workpath build/qt --distpath dist/qt packaging/subshort.spec
 ```
 
-Bản build một file nằm ở `dist/SubShort.exe`. FFmpeg/ffprobe không được bundle: cài vào `PATH` hoặc cấu hình đường dẫn tuyệt đối. Khi dùng interpreter ngoài cho TTS/separation, môi trường đó phải cài cả SubShort lẫn SDK tương ứng để import được worker `subshort.*`.
+Bản build Qt rời nằm ở `dist/qt/SubShort.exe`; lệnh trên không ghi đè build cũ trong `dist/`. PyInstaller đóng gói Qt Widgets và plugin nền tảng Windows. Giữ thư mục `cuda/` cạnh executable nếu dùng GPU. Với bản build rời, cung cấp FFmpeg/ffprobe qua `PATH` hoặc cấu hình đường dẫn tuyệt đối. Khi dùng interpreter ngoài cho TTS/separation, môi trường đó phải cài cả SubShort lẫn SDK tương ứng để import được worker `subshort.*`.
 
 Worker TTS ngoài exe được ép stdin/stdout/stderr UTF-8 qua `PYTHONIOENCODING`, tránh làm hỏng tên giọng và nội dung tiếng Việt khi Windows mặc định dùng code page khác.
 
-Mỗi job lưu `diagnostics.log` UTF-8 trong thư mục artifact: provider/model, kết quả kiểm tra response và lý do lỗi JSON/schema/ID/text. Rút gọn ghi số clip, ID nguồn, thời lượng audio và cửa sổ fit; không ghi key, transcript hay response body. `OK` chỉ xuất hiện sau validation nội dung thành công.
+Mỗi job lưu `diagnostics.log` UTF-8 trong thư mục artifact: provider/model, kết quả kiểm tra response và lý do lỗi JSON/schema/ID/text. Không ghi key, transcript hay response body. `OK` chỉ xuất hiện sau validation nội dung thành công.
 
-Windows chạy FFmpeg/ffprobe và worker nền với `CREATE_NO_WINDOW`, kể cả lệnh hủy cây tiến trình. Prompt dịch/rút gọn luôn nêu rõ JSON object `items`; response sai vẫn bị từ chối với lý do riêng cho root type, thiếu/thừa trường và kiểu `items`.
+Windows chạy FFmpeg/ffprobe và worker nền với `CREATE_NO_WINDOW`, kể cả lệnh hủy cây tiến trình. Prompt dịch luôn nêu rõ JSON object `items`; response sai vẫn bị từ chối với lý do riêng cho root type, thiếu/thừa trường và kiểu `items`.
 
 Executable hiện tại đã chạy qua UI thật ngoài checkout tại đường dẫn Unicode/khoảng trắng: enqueue video tự tạo không audio, hoàn tất `done: no_audio`, bảo toàn byte và mở lại giữ queue/output. Proof log/ảnh ở `output/P10 UI acceptance/`. Đây là máy phát triển, không phải Windows sạch; chưa chứng minh pipeline đầy đủ qua binary.
 

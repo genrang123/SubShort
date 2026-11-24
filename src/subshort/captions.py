@@ -76,7 +76,7 @@ def build_captions(voice: Path, references: list[Segment], duration: float, reco
     check_cancelled()
     if isinstance(duration, bool) or not isinstance(duration, Real) or not math.isfinite(duration) or duration < 0:
         raise ProviderError("Invalid caption duration")
-    validate_segments(references, duration)
+    validate_segments(references, duration, allow_nested=True)
     reason = None
     try:
         words = (recognizer or recognize_words)(voice)
@@ -121,13 +121,14 @@ def build_captions(voice: Path, references: list[Segment], duration: float, reco
                 check_cancelled()
                 start = reference.start + (reference.end - reference.start) * offset / size
                 offset += len(text)
-                end = reference.start + (reference.end - reference.start) * offset / size
+                end = reference.end if offset == size else reference.start + (reference.end - reference.start) * offset / size
                 bounds.append((start, end))
         for (text, _, _), (start, end) in zip(groups, bounds):
             check_cancelled()
-            captions.append(Segment(start, end, text))
+            captions.append(Segment(start, end, text, reference.source_id, reference.speaker_id))
+    captions.sort(key=lambda cue: cue.start)
     # Validate without stripping the authored whitespace returned to the caller.
-    validate_segments(captions, duration)
+    validate_segments(captions, duration, allow_nested=True)
     fallback = len(references) - matched
     return captions, {
         "source": "mixed" if matched and fallback else "asr" if matched else "reference",

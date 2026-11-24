@@ -4,7 +4,11 @@ from pathlib import Path
 import sys
 
 if getattr(sys, "frozen", False):
-    cuda = Path(sys.executable).resolve().parent / "cuda"
+    install = Path(sys.executable).resolve().parent
+    media = install / "media"
+    if media.is_dir():
+        os.environ["PATH"] = str(media) + os.pathsep + os.environ.get("PATH", "")
+    cuda = install / "cuda"
     if cuda.is_dir():
         os.environ["PATH"] = str(cuda) + os.pathsep + os.environ.get("PATH", "")
         _cuda_dll_directory = os.add_dll_directory(str(cuda))

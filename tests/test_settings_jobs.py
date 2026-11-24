@@ -205,6 +205,23 @@ def test_selected_model_paths_are_validated(root, make):
         make(tts_provider="vieneu").validate()
 
 
+@pytest.mark.parametrize("provider", ["qwen", "firered"])
+def test_installed_asr_uses_runtime_next_to_exe(root, monkeypatch, provider):
+    install = root / "install"
+    monkeypatch.setattr(models.sys, "frozen", True, raising=False)
+    monkeypatch.setattr(models.sys, "executable", str(install / "SubShort.exe"))
+    settings = Settings(root=root, asr_provider=provider)
+    with pytest.raises(ValueError, match=models.ASR_MODELS[provider]):
+        settings.asr_worker_python()
+
+    runtime = install / "runtimes" / provider / "Scripts" / "python.exe"
+    runtime.parent.mkdir(parents=True)
+    runtime.touch()
+    assert settings.asr_worker_python() == runtime.resolve()
+    setattr(settings, f"{provider}_python", "old/missing/python.exe")
+    assert settings.asr_worker_python() == runtime.resolve()
+
+
 def test_selected_media_commands_are_validated(root, make):
     make(ffmpeg="ffmpeg", ffprobe="ffprobe").validate()
     with pytest.raises(ValueError):
@@ -292,9 +309,9 @@ def _pipeline_stubs(monkeypatch, calls):
             calls["translate"].append(target)
             return segments
 
-    monkeypatch.setattr("subshort.app.MediaAdapter", FakeMedia)
-    monkeypatch.setattr("subshort.app.ASRSession", FakeASR)
-    monkeypatch.setattr("subshort.app.OpenAITranslator", FakeTranslator)
+    monkeypatch.setattr("subshort.pipeline.MediaAdapter", FakeMedia)
+    monkeypatch.setattr("subshort.pipeline.ASRSession", FakeASR)
+    monkeypatch.setattr("subshort.pipeline.OpenAITranslator", FakeTranslator)
 
 
 def _calls():
@@ -303,7 +320,7 @@ def _calls():
 
 
 def test_pipeline_uses_snapshot_config_and_current_key(root, make, monkeypatch, tmp_path):
-    from subshort.app import Pipeline
+    from subshort.pipeline import Pipeline
 
     calls = _calls()
     _pipeline_stubs(monkeypatch, calls)
@@ -335,7 +352,7 @@ def test_pipeline_uses_snapshot_config_and_current_key(root, make, monkeypatch, 
 
 
 def test_pipeline_invalid_config_fails_before_media(make, monkeypatch, tmp_path):
-    from subshort.app import Pipeline
+    from subshort.pipeline import Pipeline
 
     calls = _calls()
     _pipeline_stubs(monkeypatch, calls)
@@ -352,7 +369,7 @@ def test_pipeline_invalid_config_fails_before_media(make, monkeypatch, tmp_path)
 
 
 def test_pipeline_cancel_during_render_never_publishes_output(make, monkeypatch, tmp_path):
-    from subshort.app import Pipeline
+    from subshort.pipeline import Pipeline
     calls = _calls()
     _pipeline_stubs(monkeypatch, calls)
     queue = JobQueue(tmp_path / "queue.json")
@@ -360,7 +377,7 @@ def test_pipeline_cancel_during_render_never_publishes_output(make, monkeypatch,
     job = Job("cancel-render", str(tmp_path / "clip.mp4"), "vi")
     queue.add(job)
     pipeline = Pipeline(current, queue, lambda *_: None)
-    from subshort.app import MediaAdapter
+    from subshort.pipeline import MediaAdapter
     def render(*args, **kwargs):
         pipeline.cancel()
     monkeypatch.setattr(MediaAdapter, "render", render)

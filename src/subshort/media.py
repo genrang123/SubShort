@@ -90,47 +90,6 @@ class MediaAdapter:
         output.parent.mkdir(parents=True, exist_ok=True)
         self.run([self.ffmpeg, "-y", "-i", str(source), "-vn", "-ac", "1", "-ar", "24000", "-c:a", "pcm_s16le", str(output)])
 
-    @staticmethod
-    def clip_frames(path):
-        with wave.open(str(path), "rb") as audio:
-            if (audio.getnchannels(), audio.getsampwidth(), audio.getframerate(), audio.getcomptype()) != (1, 2, 24000, "NONE"):
-                raise MediaError("Clip phải là mono PCM16 24000 Hz")
-            frames = audio.getnframes()
-            if frames <= 0:
-                raise MediaError("Clip PCM rỗng")
-            remaining = frames
-            while remaining:
-                check_cancelled()
-                data = audio.readframes(min(remaining, 65536))
-                if not data or len(data) % 2:
-                    raise MediaError("Clip PCM bị thiếu dữ liệu")
-                remaining -= len(data) // 2
-            return frames
-
-    def fit_clip(self, source, output, window_frames):
-        if not isinstance(window_frames, int) or window_frames <= 0:
-            raise MediaError("Cửa sổ alignment không hợp lệ")
-        frames = self.clip_frames(source)
-        tempo = max(1.0, frames / window_frames)
-        if tempo > 1.4:
-            return None
-        if tempo == 1.0:
-            shutil.copyfile(source, output)
-        else:
-            self.run([self.ffmpeg, "-y", "-i", str(source), "-vn", "-af", f"atempo={tempo:.17g}",
-                      "-ac", "1", "-ar", "24000", "-c:a", "pcm_s16le", str(output)])
-        fitted = self.clip_frames(output)
-        if fitted > window_frames and tempo < 1.4:
-            # atempo output is measured; retry at the ceiling without trimming speech.
-            tempo = 1.4
-            self.run([self.ffmpeg, "-y", "-i", str(source), "-vn", "-af", f"atempo={tempo:.17g}",
-                      "-ac", "1", "-ar", "24000", "-c:a", "pcm_s16le", str(output)])
-            fitted = self.clip_frames(output)
-        if fitted > window_frames:
-            return None
-        return {"raw_duration_seconds": frames / 24000, "fitted_duration_seconds": fitted / 24000, "tempo": tempo}
-
-
     def prepare_audio(self, source: Path, output: Path, speed: float, duration: float):
         speed = self._positive(speed, "Speed")
         duration = self._positive(duration, "Duration")

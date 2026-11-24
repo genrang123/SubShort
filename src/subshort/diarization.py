@@ -64,22 +64,6 @@ def stable_labels(turns):
     return result
 
 
-def speaker_windows(segments, source_duration, slow_speed):
-    """Return per-cue PCM windows using the next turn of the same speaker."""
-    validate_segments(segments, source_duration)
-    if not isinstance(slow_speed, (int, float)) or slow_speed <= 0:
-        raise ProviderError("Tốc độ nguồn không hợp lệ")
-    windows = []
-    for index, segment in enumerate(segments):
-        if not segment.speaker_id:
-            raise ProviderError(f"alignment {segment.source_id or index}: thiếu người nói")
-        next_same = next((candidate.start for candidate in segments[index + 1:]
-                          if candidate.speaker_id == segment.speaker_id), source_duration)
-        if next_same <= segment.start:
-            raise ProviderError(f"alignment {segment.source_id or index}: lượt cùng người nói bị chồng")
-        windows.append((round(segment.start / slow_speed * 24000),
-                        round(next_same / slow_speed * 24000)))
-    return windows
 
 
 def align_segments(segments, turns, *, resplit=None):

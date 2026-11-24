@@ -3,7 +3,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from subshort.app import Pipeline
+from subshort.pipeline import Pipeline
 from subshort.execution import Cancelled
 from subshort.models import Job, Settings
 from subshort.providers import Segment
@@ -20,12 +20,14 @@ def test_invalid_or_cancelled_translation_never_publishes(tmp_path, monkeypatch,
         def render(self, *a): raise AssertionError('must not render')
     class ASR:
         def transcribe(self, *a): return [Segment(0, 1, 'source')]
-    monkeypatch.setattr('subshort.app.MediaAdapter', Media)
-    monkeypatch.setattr('subshort.app.ASRSession', lambda *a, **k: ASR())
+    monkeypatch.setattr('subshort.pipeline.MediaAdapter', Media)
+    monkeypatch.setattr('subshort.pipeline.ASRSession', lambda *a, **k: ASR())
+    source = tmp_path / 'source.mp4'
+    source.write_bytes(b'fixture video')
     queue = JobQueue(tmp_path / 'queue.json')
-    job = Job('one', 'source.mp4', 'vi')
+    job = Job('one', str(source), 'vi')
     queue.add(job)
-    pipeline = Pipeline(Settings(root=tmp_path, openai_api_key='fake'), queue, lambda *a: None)
+    pipeline = Pipeline(Settings(root=tmp_path, asr_model=str(tmp_path), openai_api_key='fake'), queue, lambda *a: None)
     def worker(*a, **k):
         if cancel:
             pipeline.cancel()

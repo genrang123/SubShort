@@ -104,30 +104,4 @@ class ArtifactCache:
     def save_file(self, stage: str, dependencies: dict, path: Path) -> None:
         self._save(stage, dependencies, path, "file")
 
-    def shortening(self, dependencies, source_id, result=None, *, begin=False):
-        # Reserve before sending: a lost HTTP response must never replay a semantic request.
-        path = self._contained("shortening.json")
-        try:
-            ledger = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
-            if not isinstance(ledger, dict):
-                raise ValueError
-        except (OSError, ValueError, TypeError):
-            raise ProviderError("Không đọc được ngân sách rút gọn; không tự gửi lại") from None
-        key = self._fingerprint({"translation": dependencies, "source_id": source_id})
-        entry = ledger.get(key)
-        if result is not None:
-            if entry != {"status": "requested"}:
-                raise ProviderError("Ngân sách rút gọn không hợp lệ")
-            ledger[key] = {"status": "completed", "text": result.text}
-        elif begin:
-            if entry is not None:
-                raise ProviderError(f"alignment {source_id}: đã dùng một lần rút gọn; không tự gửi lại")
-            ledger[key] = {"status": "requested"}
-        else:
-            if entry is None:
-                return None
-            if not isinstance(entry, dict) or entry.get("status") != "completed" or not isinstance(entry.get("text"), str) or not entry["text"].strip():
-                raise ProviderError(f"alignment {source_id}: kết quả rút gọn chưa rõ; không tự gửi lại")
-            return entry["text"]
-        _write_atomic(path, json.dumps(ledger, ensure_ascii=False, allow_nan=False).encode("utf-8"))
 

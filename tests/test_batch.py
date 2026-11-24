@@ -5,7 +5,7 @@ import pytest
 from subshort.batch import Batch
 from subshort.models import Job
 from subshort.queue import JobQueue
-from subshort.app import Pipeline
+from subshort.pipeline import Pipeline
 from subshort.providers import FatalProviderError
 
 

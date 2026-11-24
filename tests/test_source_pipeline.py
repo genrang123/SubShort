@@ -3,7 +3,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from subshort.app import App, Pipeline
+from subshort.app import App
+from subshort.pipeline import Pipeline
 from subshort.models import Job, Settings
 from subshort.providers import ProviderError
 from subshort.queue import JobQueue
@@ -43,7 +44,7 @@ def test_online_source_is_resolved_before_probe(tmp_path, monkeypatch):
         notify("public source")
         return downloaded
 
-    monkeypatch.setattr("subshort.app.MediaAdapter", Media)
+    monkeypatch.setattr("subshort.pipeline.MediaAdapter", Media)
     monkeypatch.setattr("subshort.sources.resolve_source", resolve)
     pipeline.run(job)
     assert events == ["resolve", "probe"]
@@ -72,8 +73,8 @@ def test_resolver_failure_prevents_probe_asr_and_publication(tmp_path, monkeypat
         render = forbidden
 
     monkeypatch.setattr("subshort.sources.resolve_source", fail)
-    monkeypatch.setattr("subshort.app.MediaAdapter", Media)
-    monkeypatch.setattr("subshort.app.ASRSession", forbidden)
+    monkeypatch.setattr("subshort.pipeline.MediaAdapter", Media)
+    monkeypatch.setattr("subshort.pipeline.ASRSession", forbidden)
     pipeline.run(job)
     assert calls == ["yt:abcdefghijk"]
     assert job.status == "failed" and job.error == "public download rejected"
@@ -98,7 +99,7 @@ def test_local_source_never_calls_downloader(tmp_path, monkeypatch):
             probed.append(video)
             return {"duration": 2.0, "has_audio": False}
 
-    monkeypatch.setattr("subshort.app.MediaAdapter", Media)
+    monkeypatch.setattr("subshort.pipeline.MediaAdapter", Media)
     monkeypatch.setattr("subshort.sources.resolve_source", forbidden)
     pipeline.run(job)
     assert probed == [source]
@@ -112,8 +113,9 @@ def headless_app(tmp_path, monkeypatch, text):
     errors = []
     refreshes = []
     app = SimpleNamespace(settings=settings, queue=JobQueue(tmp_path / "queue.json"), refresh=lambda: refreshes.append(True))
-    monkeypatch.setattr("subshort.app.simpledialog.askstring", lambda *args, **kwargs: text)
-    monkeypatch.setattr("subshort.app.messagebox.showerror", lambda *args: errors.append(args))
+    app.can_mutate = lambda: not app.queue.load_error
+    monkeypatch.setattr("subshort.app.QInputDialog.getMultiLineText", lambda *args, **kwargs: (text, True))
+    monkeypatch.setattr("subshort.app.show_message", lambda *args, **kwargs: errors.append(args))
     return app, errors, refreshes
 
 

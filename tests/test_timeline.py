@@ -14,6 +14,7 @@ def pcm_clip(tmp_path, name, frames, *, channels=1, rate=24000, width=2):
         audio.writeframes(b"\0" * frames * channels * width)
     return path
 
+
 def test_source_turns_keep_separate_starts(tmp_path):
     segments = [Segment(start, start + 1, str(i)) for i, start in enumerate((0, 5.40, 12.86))]
     clips = [pcm_clip(tmp_path, f"turn{i}.wav", 24000) for i in range(3)]
@@ -21,11 +22,15 @@ def test_source_turns_keep_separate_starts(tmp_path):
     assert [row["actual_start_seconds"] for row in timeline] == [round(s.start / 0.7 * 24000) / 24000 for s in segments]
     assert all(row["delay_seconds"] == 0 for row in timeline)
 
-def test_overlong_clip_never_moves_next_turn(tmp_path):
-    clips = [pcm_clip(tmp_path, "long.wav", 48001), pcm_clip(tmp_path, "next.wav", 24000)]
-    with pytest.raises(ValueError, match="alignment"):
-        build_timeline([Segment(0, 1, "first"), Segment(2, 3, "next")], clips, source_duration=4)
 
+def test_overlong_clip_delays_next_turn_by_exactly_one_sample(tmp_path):
+    clips = [pcm_clip(tmp_path, "long.wav", 48001), pcm_clip(tmp_path, "next.wav", 24000)]
+    timeline = build_timeline([Segment(0, 1, "first"), Segment(2, 3, "next")], clips, source_duration=4)
+    assert timeline[0]["duration_seconds"] == 48001 / 24000
+    assert timeline[1]["requested_start_seconds"] == 2
+    assert timeline[0]["actual_end_seconds"] == timeline[1]["actual_start_seconds"] == 48001 / 24000
+    assert timeline[1]["delay_seconds"] == 1 / 24000
+    assert timeline[1]["actual_end_seconds"] == 72001 / 24000
 
 
 def test_timeline_measures_pcm_without_moving_starts(tmp_path):
@@ -52,14 +57,23 @@ def test_nonunit_speeds_keep_source_duration(tmp_path):
     assert result["freeze_seconds"] == 0
 
 
-@pytest.mark.parametrize("rows", [
-    [Segment(0, 1, "A"), Segment(0, 2, "B")],
-    [Segment(0, 2, "A"), Segment(1, 3, "B")],
-])
-def test_source_windows_reject_overlap(tmp_path, rows):
-    clips = [pcm_clip(tmp_path, f"{i}.wav", 1) for i in range(2)]
-    with pytest.raises(ValueError, match="alignment"):
-        build_timeline(rows, clips, source_duration=4)
+def test_overlapping_source_cues_keep_their_bounds_in_one_lane(tmp_path):
+    clips = [pcm_clip(tmp_path, "first.wav", 48000), pcm_clip(tmp_path, "next.wav", 24000)]
+    timeline = build_timeline([Segment(0, 2, "A"), Segment(1, 3, "B")], clips, source_duration=4)
+    assert [(row["source_start_seconds"], row["source_end_seconds"]) for row in timeline] == [(0, 2), (1, 3)]
+    assert [row["actual_start_seconds"] for row in timeline] == [0, 2]
+    assert [row["delay_seconds"] for row in timeline] == [0, 1]
+
+
+def test_alignment_extends_picture_and_scales_freeze_at_final_speed(tmp_path):
+    clip = pcm_clip(tmp_path, "long.wav", 96000)
+    timeline = build_timeline([Segment(0, 1, "A")], [clip], .5, source_duration=1.5)
+    result = timeline_alignment(timeline, 1.5, .5, 2)
+    assert result == {
+        "source_duration_seconds": 1.5, "slow_duration_seconds": 3,
+        "video_speed": 1, "picture_speed": 1, "target_duration_seconds": 4,
+        "final_duration_seconds": 2, "freeze_seconds": .5,
+    }
 
 
 def test_empty_timeline_retains_slow_source_duration():
@@ -111,11 +125,11 @@ def test_timeline_rejects_truncated_pcm(tmp_path):
         build_timeline([Segment(0, 1, "A")], [clip])
 
 
-@pytest.mark.parametrize("start,end", [(-1, 1), (0, 0), (float("nan"), 1), (0, float("inf"))])
+@pytest.mark.parametrize("start,end", [(-1, 1), (0, 0), (float("nan"), 1), (0, float("inf")), (0, 3)])
 def test_timeline_rejects_invalid_source_bounds(tmp_path, start, end):
     clip = pcm_clip(tmp_path, "a.wav", 1)
     with pytest.raises(ProviderError):
-        build_timeline([Segment(start, end, "A")], [clip])
+        build_timeline([Segment(start, end, "A")], [clip], source_duration=2)
 
 
 @pytest.mark.parametrize("start,end", [(-1, 1), (0, 0), (1, 0.5), (float("nan"), 1), (0, float("inf")), (True, 2)])

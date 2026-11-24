@@ -5,7 +5,7 @@ import shutil
 import wave
 import pytest
 
-from subshort.app import Pipeline
+from subshort.pipeline import Pipeline
 from subshort.execution import run_process
 from subshort.media import MediaAdapter
 from subshort.models import Job, Settings
@@ -39,9 +39,9 @@ def test_real_visual_pipeline_ass_hook_and_dub(tmp_path, monkeypatch, mode, hook
                 stream.setparams((1, 2, 24000, 0, "NONE", "not compressed"))
                 stream.writeframes(b"\0\0" * 12000)
 
-    monkeypatch.setattr("subshort.app.ASRSession", lambda *a, **k: ASR())
-    monkeypatch.setattr("subshort.app.OpenAITranslator", Translator)
-    monkeypatch.setattr("subshort.app.TtsSession", lambda *a, **k: TTS())
+    monkeypatch.setattr("subshort.pipeline.ASRSession", lambda *a, **k: ASR())
+    monkeypatch.setattr("subshort.pipeline.OpenAITranslator", Translator)
+    monkeypatch.setattr("subshort.pipeline.TtsSession", lambda *a, **k: TTS())
     monkeypatch.setattr("subshort.captions.build_captions", lambda voice, references, duration: (references, {"source": "reference"}))
     queue = JobQueue(tmp_path / "queue.json")
     settings = Settings(root=tmp_path, ffmpeg=ffmpeg, ffprobe=ffprobe, asr_model=str(tmp_path), tts_provider="vieneu", tts_model=str(tmp_path), tts_hf_cache=str(tmp_path), tts_python=sys.executable, slow_speed=1, final_speed=1, hook_enabled=hook_enabled, hook_duration=1)

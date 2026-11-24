@@ -1,64 +1,101 @@
-"""Shared studio styling; native file pickers retain platform accessibility."""
-from tkinter import ttk, font
+"""Shared studio palette and plain-text message boxes."""
+from PySide6.QtCore import Qt
+from PySide6.QtGui import QColor, QFont, QPalette
+from PySide6.QtWidgets import QLabel, QMessageBox
 
-BG = "#10141f"
-SURFACE = "#191f2e"
-FG = "#e8edf7"
-MUTED = "#91a0b8"
-ACCENT = "#7c6cff"
+APP, SIDEBAR, SURFACE, ELEVATED = '#10131b', '#151a25', '#1b2230', '#252e40'
+TEXT, MUTED, BORDER = '#f1f5f9', '#a9b7cb', '#39465b'
+ACCENT, ACCENT_HOVER, FOCUS = '#4056ba', '#4c64cc', '#a4b5ff'
+SUCCESS, WARNING, ERROR = '#86efac', '#fcd382', '#fca5a5'
 
 
-def apply_theme(root):
-    root.configure(background=BG)
-    root.option_add("*Background", SURFACE)
-    for name in ("TkDefaultFont", "TkTextFont", "TkMenuFont"):
-        font.nametofont(name, root=root).configure(family="Segoe UI", size=10)
-    root.option_add("*Foreground", FG)
-    root.option_add("*insertBackground", FG)
-    root.option_add("*selectBackground", ACCENT)
-    root.option_add("*selectForeground", "white")
-    style = ttk.Style(root)
-    style.theme_use("clam")
-    style.configure(".", background=SURFACE, foreground=FG, bordercolor="#30394e",
-                    lightcolor=SURFACE, darkcolor=SURFACE, font=("Segoe UI", 10))
-    style.configure("TFrame", background=BG)
-    style.configure("Card.TFrame", background=SURFACE)
-    style.configure("TLabel", background=BG)
-    style.configure("Card.TLabel", background=SURFACE)
-    style.configure("Muted.TLabel", foreground=MUTED)
-    style.configure("Title.TLabel", font=("Segoe UI Semibold", 24))
-    style.configure("Heading.TLabel", font=("Segoe UI Semibold", 13))
-    style.configure("Brand.TLabel", foreground=ACCENT, font=("Segoe UI Semibold", 21))
-    style.configure("TButton", padding=(14, 10), relief="flat", borderwidth=0)
-    style.map("TButton", background=[("active", "#30394e"), ("disabled", "#202638")],
-              foreground=[("disabled", "#627087")])
-    style.configure("Primary.TButton", background=ACCENT, foreground="white")
-    style.map("Primary.TButton", background=[("active", "#9487ff"), ("disabled", "#393451")])
-    style.configure("Danger.TButton", foreground="#ff9aab")
-    style.configure("TEntry", fieldbackground="#222a3c", padding=8, insertcolor=FG)
-    style.configure("TCombobox", fieldbackground="#222a3c", padding=7, arrowcolor=MUTED)
-    style.map("TCombobox", fieldbackground=[("readonly", "#222a3c")],
-              foreground=[("readonly", FG)])
-    style.configure("TCheckbutton", background=BG, padding=5)
-    style.map("TCheckbutton", background=[("active", BG)])
-    style.configure("TLabelframe", background=BG, padding=14)
-    style.configure("TLabelframe.Label", background=BG, foreground=MUTED,
-                    font=("Segoe UI Semibold", 10))
-    style.configure("TNotebook", background=BG, borderwidth=0, tabmargins=(0, 8, 0, 8))
-    style.configure("TNotebook.Tab", padding=(12, 9), background=SURFACE)
-    style.map("TNotebook.Tab", background=[("selected", ACCENT)], foreground=[("selected", "white")])
-    style.configure("Treeview", background=SURFACE, fieldbackground=SURFACE,
-                    foreground=FG, rowheight=46, borderwidth=0)
-    style.configure("Treeview.Heading", background="#222a3c", foreground=MUTED,
-                    padding=(10, 12), relief="flat", font=("Segoe UI Semibold", 10))
-    style.map("Treeview", background=[("selected", "#38335c")], foreground=[("selected", "white")])
-    style.configure("TScrollbar", background="#30394e", troughcolor=BG, borderwidth=0,
-                    arrowcolor=MUTED)
-    for orientation in ("Vertical", "Horizontal"):
-        style.layout(f"{orientation}.TScrollbar", [
-            (f"{orientation}.Scrollbar.trough", {"sticky": "nswe", "children": [
-                (f"{orientation}.Scrollbar.thumb", {"expand": "1", "sticky": "nswe"})]})])
-        style.configure(f"{orientation}.TScrollbar", background="#30394e", troughcolor=BG,
-                        bordercolor=BG, lightcolor="#30394e", darkcolor="#30394e", arrowsize=10)  
-    style.configure("TProgressbar", background=ACCENT, troughcolor="#222a3c", borderwidth=0)
-    return style
+def page_header(layout, title, subtitle=''):
+    heading = QLabel(title, objectName='heading')
+    layout.addWidget(heading)
+    if subtitle:
+        description = QLabel(subtitle, objectName='muted')
+        description.setWordWrap(True)
+        layout.addWidget(description)
+
+
+def apply_theme(app):
+    app.setStyle('Fusion')
+    app.setFont(QFont('Segoe UI', 10))
+    palette = QPalette()
+    for role, color in {
+        'Window': APP, 'WindowText': TEXT, 'Base': SURFACE,
+        'AlternateBase': '#202838', 'Text': TEXT, 'Button': ELEVATED,
+        'ButtonText': TEXT, 'Highlight': ACCENT, 'HighlightedText': '#ffffff',
+        'ToolTipBase': ELEVATED, 'ToolTipText': TEXT, 'PlaceholderText': MUTED,
+    }.items():
+        palette.setColor(getattr(QPalette.ColorRole, role), QColor(color))
+    for role in (QPalette.ColorRole.Text, QPalette.ColorRole.ButtonText, QPalette.ColorRole.WindowText):
+        palette.setColor(QPalette.ColorGroup.Disabled, role, QColor("#8793a8"))
+    app.setPalette(palette)
+    app.setStyleSheet(f'''
+        QWidget#sidebar {{ background: {SIDEBAR}; border-right: 1px solid {BORDER}; }}
+        QWidget#queueSummary, QWidget#emptyQueue, QWidget#jobDetails {{
+            background: {SURFACE}; border: 1px solid {BORDER}; border-radius: 8px;
+        }}
+        QLabel#brand {{ color: {FOCUS}; font-size: 21px; font-weight: 700; }}
+        QLabel#heading {{ font-size: 24px; font-weight: 600; }}
+        QLabel#section {{ font-size: 16px; font-weight: 600; }}
+        QLabel#muted, QLabel#navSection {{ color: {MUTED}; }}
+        QLabel#navSection {{ font-size: 11px; font-weight: 600; }}
+        QPushButton {{ background: {ELEVATED}; border: 1px solid {BORDER};
+            border-radius: 6px; padding: 5px 10px; min-height: 20px; }}
+        QPushButton:hover {{ background: {BORDER}; }}
+        QPushButton:pressed {{ background: {SURFACE}; }}
+        QPushButton[variant="primary"] {{ background: {ACCENT}; color: white; border-color: {ACCENT}; }}
+        QPushButton[variant="primary"]:hover {{ background: {ACCENT_HOVER}; }}
+        QPushButton[variant="primary"]:pressed {{ background: #354691; }}
+        QPushButton[variant="danger"] {{ color: {ERROR}; border-color: #82464d; }}
+        QPushButton[variant="danger"]:hover {{ background: #533038; }}
+        QPushButton[variant="nav"] {{ background: transparent; border-color: transparent; text-align: left; }}
+        QPushButton[variant="nav"]:hover {{ background: {ELEVATED}; }}
+        QPushButton[variant="nav"]:pressed {{ background: {BORDER}; }}
+        QPushButton[variant="nav"]:checked {{ background: #263359; border-left: 3px solid {FOCUS}; }}
+        QPushButton:disabled, QPushButton[variant]:disabled {{
+            background: {SURFACE}; color: #8793a8; border-color: {BORDER};
+        }}
+        QPushButton:focus, QLineEdit:focus, QComboBox:focus, QPlainTextEdit:focus, QTableView:focus {{
+            border: 1px solid {FOCUS};
+        }}
+        QPushButton[variant]:focus {{ border-color: {FOCUS}; }}
+        QFrame#voiceCard {{ background: {SURFACE}; border: 1px solid {BORDER}; border-radius: 8px; }}
+        QPushButton#voiceTitle {{ text-align: left; font-weight: 600; }}
+        QPushButton#voiceTitle:checked {{ background: {ACCENT}; color: white; }}
+        QLabel#voiceBadge {{ color: {FOCUS}; font-weight: 600; }}
+        QHeaderView::section {{ background: {ELEVATED}; border: none; padding: 7px 9px;
+            color: {MUTED}; font-weight: 600; }}
+        QTableView {{ border: 1px solid {BORDER}; border-radius: 8px; }}
+        QTableView::item {{ padding: 0 8px; }}
+        QLineEdit, QComboBox {{ min-height: 22px; padding: 4px 6px;
+            border: 1px solid {BORDER}; border-radius: 5px; }}
+        QPlainTextEdit {{ border: 1px solid {BORDER}; border-radius: 5px; }}
+        QGroupBox {{ margin-top: 12px; padding: 10px; border: 1px solid {BORDER}; border-radius: 6px; }}
+        QGroupBox::title {{ subcontrol-origin: margin; left: 10px; padding: 0 4px; }}
+        QTabBar::tab {{ padding: 6px 10px; background: {ELEVATED}; }}
+        QTabBar::tab:selected {{ border-bottom: 2px solid {FOCUS}; }}
+        QProgressBar {{ border: none; background: {ELEVATED}; border-radius: 4px; min-height: 6px; }}
+        QProgressBar::chunk {{ background: {FOCUS}; border-radius: 4px; }}
+        QToolTip {{ background: {ELEVATED}; color: {TEXT}; border: 1px solid {BORDER}; }}
+        QStatusBar {{ background: {SIDEBAR}; border-top: 1px solid {BORDER}; }}
+        QStatusBar::item {{ border: none; }}
+    ''')
+
+
+def show_message(parent, title, text, icon=QMessageBox.Icon.Critical):
+    box = QMessageBox(icon, title, "", QMessageBox.StandardButton.Ok, parent)
+    box.setTextFormat(Qt.TextFormat.PlainText)
+    box.setText(text)
+    box.exec()
+
+
+def ask_confirmation(parent, title, text):
+    buttons = QMessageBox.StandardButton
+    box = QMessageBox(QMessageBox.Icon.Question, title, "", buttons.Yes | buttons.No, parent)
+    box.setTextFormat(Qt.TextFormat.PlainText)
+    box.setText(text)
+    box.setDefaultButton(buttons.No)
+    return box.exec() == buttons.Yes

@@ -5,7 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from subshort.app import Pipeline
+from subshort.pipeline import Pipeline
 from subshort.media import MediaAdapter, MediaError
 from subshort.models import Job, Settings
 from subshort.providers import Segment
@@ -23,7 +23,7 @@ def test_probe_rejects_invalid_duration(monkeypatch, tmp_path, duration):
 def test_source_without_speech_preserves_bytes_without_translation(tmp_path, monkeypatch, audio, rows, reason):
     source = tmp_path / 'source.mp4'
     source.write_bytes(b'source bytes retained exactly')
-    settings = Settings(root=tmp_path)
+    settings = Settings(root=tmp_path, asr_model=str(tmp_path))
     monkeypatch.setattr(Settings, 'validate', lambda *a, **k: None)
     class Media:
         def __init__(self, *a): pass
@@ -33,10 +33,10 @@ def test_source_without_speech_preserves_bytes_without_translation(tmp_path, mon
         def transcribe(self, *a):
             assert audio
             return rows
-    monkeypatch.setattr('subshort.app.MediaAdapter', Media)
-    monkeypatch.setattr('subshort.app.ASRSession', lambda *a, **k: ASR())
+    monkeypatch.setattr('subshort.pipeline.MediaAdapter', Media)
+    monkeypatch.setattr('subshort.pipeline.ASRSession', lambda *a, **k: ASR())
     def forbidden(*a, **k): raise AssertionError('translation must not run')
-    monkeypatch.setattr('subshort.app.OpenAITranslator', forbidden)
+    monkeypatch.setattr('subshort.pipeline.OpenAITranslator', forbidden)
     queue = JobQueue(tmp_path / 'queue.json')
     job = Job('one', str(source), 'vi')
     queue.add(job)
@@ -58,8 +58,8 @@ def test_asr_outside_duration_fails_before_translation(tmp_path, monkeypatch):
         def extract_audio(self, *a): pass
     class ASR:
         def transcribe(self, *a): return [Segment(0, 2, 'outside')]
-    monkeypatch.setattr('subshort.app.MediaAdapter', Media)
-    monkeypatch.setattr('subshort.app.ASRSession', lambda *a, **k: ASR())
+    monkeypatch.setattr('subshort.pipeline.MediaAdapter', Media)
+    monkeypatch.setattr('subshort.pipeline.ASRSession', lambda *a, **k: ASR())
     queue = JobQueue(tmp_path / 'queue.json')
     job = Job('one', 'source.mp4', 'vi')
     queue.add(job)
@@ -93,7 +93,7 @@ def test_real_silent_audio_preserved_after_empty_asr(tmp_path, monkeypatch):
                 assert stream.getframerate() == 16000
                 assert not any(stream.readframes(stream.getnframes()))
             return []
-    monkeypatch.setattr('subshort.app.ASRSession', lambda *a, **k: ASR())
+    monkeypatch.setattr('subshort.pipeline.ASRSession', lambda *a, **k: ASR())
     settings = Settings(root=tmp_path, ffmpeg=ffmpeg, ffprobe=ffprobe, asr_model=str(tmp_path))
     queue = JobQueue(tmp_path / 'queue.json')
     job = Job('silence', str(video), 'vi')

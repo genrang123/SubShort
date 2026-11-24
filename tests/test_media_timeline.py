@@ -33,30 +33,6 @@ def media():
         pytest.skip('FFmpeg and ffprobe required')
     return MediaAdapter(ffmpeg, ffprobe)
 
-@pytest.mark.parametrize("frames,window,expected", [(12000, 24000, 1), (24000, 24000, 1), (33601, 24000, None)])
-def test_fit_clip_preserves_natural_or_rejects_over_limit(tmp_path, frames, window, expected):
-    source = pcm(tmp_path / "raw.wav", frames)
-    output = tmp_path / "fit.wav"
-    result = MediaAdapter().fit_clip(source, output, window)
-    if expected is None:
-        assert result is None
-        assert not output.exists()
-    else:
-        assert result["tempo"] == expected
-        assert output.read_bytes() == source.read_bytes()
-
-
-@pytest.mark.parametrize("duration", [1.1, 1.26])
-def test_fit_clip_measures_real_atempo_result(tmp_path, media, duration):
-    source = tmp_path / "speech.wav"
-    media.run([media.ffmpeg, "-y", "-f", "lavfi", "-i", f"sine=frequency=440:duration={duration}", "-ac", "1", "-ar", "24000", "-c:a", "pcm_s16le", str(source)])
-    output = tmp_path / "fit.wav"
-    result = media.fit_clip(source, output, 24000)
-    assert result is not None
-    assert 1 < result["tempo"] <= 1.4
-    assert media.clip_frames(output) <= 24000
-
-
 
 def test_timeline_exact_frames_gaps_padding_and_no_voice_truncation(tmp_path):
     first = pcm(tmp_path / 'first.wav', 7, 1200)

@@ -31,13 +31,19 @@ def test_real_http_worker_uses_custom_endpoint_and_preserves_ids():
     try:
         translator = OpenAICompatibleTranslator('test-only-key', 'custom-model',
                                                f'http://127.0.0.1:{server.server_port}/v1/')
-        assert translator.translate([Segment(0, 1, 'one'), Segment(2, 3, 'two')], 'vi') == [
-            Segment(0, 1, 'một'), Segment(2, 3, 'hai')]
+        assert translator.translate([Segment(0, 1, 'one'), Segment(2, 3.25, 'two')], 'vi') == [
+            Segment(0, 1, 'một'), Segment(2, 3.25, 'hai')]
         path, auth, payload = requests[0]
         assert path == '/v1/chat/completions'
         assert auth == 'Bearer test-only-key'
         assert payload['model'] == 'custom-model'
+        assert payload['stream'] is False
         assert payload['response_format']['json_schema']['strict'] is True
+        prompt = payload['messages'][0]['content']
+        assert json.loads(prompt.split('\n', 1)[1]) == {'items': [
+            {'id': '0', 'text': 'one', 'source_duration_seconds': 1},
+            {'id': '1', 'text': 'two', 'source_duration_seconds': 1.25},
+        ]}
     finally:
         server.shutdown()
         server.server_close()
