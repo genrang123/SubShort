@@ -26,7 +26,7 @@ def harness(tmp_path, monkeypatch):
         def extract_audio(self, source, output): output.write_bytes(b"audio")
         def extract_audio_window(self, source, output, start, end):
             output.write_bytes(b"window")
-        def normalize_clip(self, raw, output):
+        def normalize_clip(self, raw, output, *, speed=1.0):
             counts["normalize"] += 1
             output.write_bytes(raw.read_bytes())
         def timeline_audio(self, clips, starts, output, duration): output.write_bytes(b"timeline")

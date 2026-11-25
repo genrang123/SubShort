@@ -362,7 +362,7 @@ class Pipeline:
                     else:
                         reused_stages.append(stage)
                     clip = clip_dir / f"{index:05}.normalized.wav"
-                    media.normalize_clip(raw, clip)
+                    media.normalize_clip(raw, clip, speed=settings.tts_speed)
                     clips.append(clip)
                 if tts_executed:
                     stages.append("tts")

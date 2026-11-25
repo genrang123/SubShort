@@ -17,6 +17,16 @@ from .execution import check_cancelled
 from .providers import FatalProviderError, ProviderError, Segment, validate_segments
 
 
+QWEN_LANGUAGES = {
+    "zh": "Chinese", "en": "English", "yue": "Cantonese", "ar": "Arabic", "de": "German",
+    "fr": "French", "es": "Spanish", "pt": "Portuguese", "id": "Indonesian", "it": "Italian",
+    "ko": "Korean", "ru": "Russian", "th": "Thai", "vi": "Vietnamese", "ja": "Japanese",
+    "tr": "Turkish", "hi": "Hindi", "ms": "Malay", "nl": "Dutch", "sv": "Swedish",
+    "da": "Danish", "fi": "Finnish", "pl": "Polish", "cs": "Czech", "tl": "Filipino",
+    "fa": "Persian", "el": "Greek", "ro": "Romanian", "hu": "Hungarian", "mk": "Macedonian",
+}
+
+
 def _read_wav_audio(path, sampling_rate):
     import torch
     with wave.open(str(path), "rb") as source:
@@ -237,8 +247,7 @@ class ASRSession:
         from silero_vad import get_speech_timestamps, read_audio
         if self.engine == "qwen" and language:
             # Settings use ISO codes; Qwen requires canonical language names.
-            names = {"zh": "Chinese", "en": "English", "yue": "Cantonese", "ar": "Arabic", "de": "German", "fr": "French", "es": "Spanish", "pt": "Portuguese", "id": "Indonesian", "it": "Italian", "ko": "Korean", "ru": "Russian", "th": "Thai", "vi": "Vietnamese", "ja": "Japanese", "tr": "Turkish", "hi": "Hindi", "ms": "Malay", "nl": "Dutch", "sv": "Swedish", "da": "Danish", "fi": "Finnish", "pl": "Polish", "cs": "Czech", "tl": "Filipino", "fa": "Persian", "el": "Greek", "ro": "Romanian", "hu": "Hungarian", "mk": "Macedonian"}
-            language = names.get(language.strip().lower(), language)
+            language = QWEN_LANGUAGES.get(language.strip().lower(), language)
         try:
             waveform = read_audio(str(audio), sampling_rate=16000)
         except RuntimeError as exc:

@@ -308,7 +308,7 @@ def test_stale_preview_completion_is_ignored(qapp, tmp_path, monkeypatch):
     release = {voice: threading.Event() for voice in ("p1", "p2")}
     played = []
 
-    def render(provider, voice, reference, python, options, media, *, recording=False, session=None):
+    def render(provider, voice, reference, python, options, media, *, recording=False, session=None, speed=1.0):
         entered[voice].set()
         assert release[voice].wait(5)
         return b"wav-" + voice.encode()
@@ -316,7 +316,7 @@ def test_stale_preview_completion_is_ignored(qapp, tmp_path, monkeypatch):
     monkeypatch.setattr(voices_dialog, "render_preview", render)
     monkeypatch.setattr(voices_dialog, "play_preview", played.append)
     monkeypatch.setattr(voices_dialog, "stop_preview", lambda: None)
-    settings = SimpleNamespace(root=tmp_path, ffmpeg="ffmpeg", ffprobe="ffprobe", save=lambda: None)
+    settings = SimpleNamespace(root=tmp_path, ffmpeg="ffmpeg", ffprobe="ffprobe", tts_speed=1.0, save=lambda: None)
     cache = {voices_dialog.preset_key(settings): [
         {"id": "p1", "label": "Giọng Một"},
         {"id": "p2", "label": "Giọng Hai"},
@@ -343,7 +343,7 @@ def test_stale_preview_completion_is_ignored(qapp, tmp_path, monkeypatch):
 
 def _warm_settings(tmp_path):
     return SimpleNamespace(root=tmp_path, ffmpeg='ffmpeg', ffprobe='ffprobe',
-                           tts_provider='vieneu', tts_model='model', save=lambda: None)
+                           tts_provider='vieneu', tts_model='model', tts_speed=1.25, save=lambda: None)
 
 
 def test_preview_reuses_catalog_session_and_closes_it_off_gui(tmp_path, qapp, monkeypatch):
@@ -367,7 +367,11 @@ def test_preview_reuses_catalog_session_and_closes_it_off_gui(tmp_path, qapp, mo
         def close(self):
             closed.append((self, threading.get_ident()))
 
-    media = SimpleNamespace(normalize_clip=lambda raw, wav: wav.write_bytes(raw.read_bytes()))
+    def normalize_clip(raw, wav, *, speed):
+        assert speed == 1.25
+        wav.write_bytes(raw.read_bytes())
+
+    media = SimpleNamespace(normalize_clip=normalize_clip)
     monkeypatch.setattr(voices_dialog, 'TtsSession', Session)
     monkeypatch.setattr(voices_dialog, 'play_preview', played.append)
     settings = _warm_settings(tmp_path)

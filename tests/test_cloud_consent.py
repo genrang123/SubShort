@@ -164,7 +164,7 @@ def test_selected_edge_synthesizes_and_publishes_without_extra_permission(pipeli
 
     monkeypatch.setattr(pipeline_module, "OpenAITranslator", Translator)
     monkeypatch.setattr(pipeline_module, "EdgeTTS", Edge)
-    monkeypatch.setattr(pipeline_module.MediaAdapter, "normalize_clip", lambda self, raw, output: output.write_bytes(raw.read_bytes()), raising=False)
+    monkeypatch.setattr(pipeline_module.MediaAdapter, "normalize_clip", lambda self, raw, output, *, speed=1.0: output.write_bytes(raw.read_bytes()), raising=False)
     monkeypatch.setattr(pipeline_module.MediaAdapter, "timeline_audio", lambda self, clips, starts, output, duration: output.write_bytes(b"timeline"), raising=False)
     pipeline.run(job)
     assert requests == [("source text", "vi-VN-HoaiMyNeural")]

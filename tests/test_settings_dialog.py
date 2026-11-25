@@ -6,7 +6,7 @@ import pytest
 from PySide6.QtCore import Qt
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import (
-    QCheckBox, QComboBox, QDialog, QDialogButtonBox, QLineEdit, QMessageBox,
+    QCheckBox, QComboBox, QDialog, QDialogButtonBox, QInputDialog, QLineEdit, QMessageBox, QPushButton,
     QTabWidget, QWidget,
 )
 
@@ -57,23 +57,28 @@ def test_dialog_tabs_and_editors(parent, tmp_path):
     settings = Settings(root=tmp_path, mode="dub", keep_original_audio=True, asr_model="model with spaces")
     dialog = SettingsDialog(parent, settings)
     tabs = dialog.findChild(QTabWidget)
-    groups = ["Chung", "Nhận dạng", "Người nói", "Dịch", "Giọng đọc", "Âm thanh / Đầu ra",
+    groups = ["Chung", "API & dịch vụ", "Nhận dạng", "Người nói", "Giọng đọc", "Âm thanh / Đầu ra",
               "Đồng bộ", "Video", "Phụ đề cũ", "Hook trích văn bản"]
     assert dialog.isModal()
-    assert [tabs.tabText(index) for index in range(tabs.count())] == groups
+    assert [tabs.tabText(index).replace('&&', '&') for index in range(tabs.count())] == groups
     for group, name, _, value_type, choices in FIELD_REGISTRY:
-        page = tabs.widget(groups.index(group))
+        page = tabs.widget(groups.index(group)).widget()
         value = getattr(settings, name)
         if choices:
             editor = page.findChild(QComboBox, name)
             assert not editor.isEditable()
             assert [editor.itemData(index) for index in range(editor.count())] == list(choices)
             assert editor.currentData() == value
+        elif name in ('translation_model', 'vision_model', 'source_language', 'target_language',
+                     'tts_voice', 'tts_custom_voice'):
+            editor = page.findChild(QComboBox, name)
+            assert not editor.isEditable()
+            assert editor.currentData() == value
         elif value_type is bool:
             assert page.findChild(QCheckBox, name).isChecked() is value
         else:
             assert page.findChild(QLineEdit, name).text() == str(value)
-    recognition = tabs.widget(groups.index("Nhận dạng"))
+    recognition = tabs.widget(groups.index("Nhận dạng")).widget()
     model = recognition.findChild(QComboBox, "asr_provider")
     assert recognition.layout().labelForField(model).text() == "Model"
     assert [model.itemText(i) for i in range(model.count())] == [
@@ -224,3 +229,58 @@ def test_cancellation_keeps_settings(parent, tmp_path, monkeypatch, escape):
     assert settings == previous
     save.assert_not_called()
     callback.assert_not_called()
+
+
+def test_multilingual_edge_selection_persists(parent, tmp_path, monkeypatch):
+    async def list_voices():
+        return [
+            {'ShortName': 'en-US-AriaNeural', 'FriendlyName': 'Aria', 'Locale': 'en-US'},
+            {'ShortName': 'ja-JP-NanamiNeural', 'FriendlyName': 'Nanami', 'Locale': 'ja-JP'},
+        ]
+
+    monkeypatch.setattr('edge_tts.list_voices', list_voices)
+    monkeypatch.setattr(Settings, 'validate', lambda self: None)
+    dialog = SettingsDialog(parent, Settings(root=tmp_path))
+    source, target, voices = (dialog.editors[name] for name in ('source_language', 'target_language', 'tts_voice'))
+    assert source.currentText() == 'Tự nhận diện'
+    source.setCurrentIndex(source.findData('es'))
+    assert dialog.editors['tts_custom_voice'].isEnabled() is False
+    target.setCurrentIndex(target.findData('ja'))
+    fetch = dialog.findChild(QPushButton, 'fetch_tts_voice')
+    fetch.click()
+    for _ in range(120):
+        if fetch.isEnabled():
+            break
+        QTest.qWait(25)
+    assert voices.itemData(0) == 'ja-JP-NanamiNeural'
+    assert voices.itemData(1) == 'en-US-AriaNeural'
+    assert voices.currentData() == 'vi-VN-HoaiMyNeural'
+    voices.setCurrentIndex(0)
+    save_dialog(dialog)
+    assert dialog.result() == QDialog.DialogCode.Accepted
+    saved = Settings.load(tmp_path)
+    assert (saved.source_language, saved.target_language, saved.tts_voice) == ('es', 'ja', 'ja-JP-NanamiNeural')
+
+
+def test_other_target_and_recorded_voice_use_stable_ids(parent, tmp_path, monkeypatch):
+    recording_id = '6b93a608-01b7-4e08-8771-ed26fc5c6f92'
+    monkeypatch.setattr('subshort.settings_dialog.VoiceRegistry.list', lambda self: [
+        {'id': recording_id, 'name': 'Bản thu tiếng Nhật', 'provider': 'omnivoice'},
+    ])
+    monkeypatch.setattr(QInputDialog, 'getText', lambda *args: ('is', True))
+    monkeypatch.setattr(Settings, 'validate', lambda self: None)
+    dialog = SettingsDialog(parent, Settings(root=tmp_path, tts_provider='vieneu', source_language='uk'))
+    source, target, recordings = (dialog.editors[name] for name in ('source_language', 'target_language', 'tts_custom_voice'))
+    asr = dialog.editors['asr_provider']
+    asr.setCurrentIndex(asr.findData('qwen'))
+    assert source.currentData() == '' and source.findData('uk') == -1 and source.findData('ja') >= 0
+    target.setCurrentIndex(target.findText('Khác…'))
+    assert recordings.findData(recording_id) == -1
+    provider = dialog.editors['tts_provider']
+    provider.setCurrentIndex(provider.findData('omnivoice'))
+    assert recordings.itemText(recordings.findData(recording_id)) == 'Bản thu tiếng Nhật'
+    recordings.setCurrentIndex(recordings.findData(recording_id))
+    save_dialog(dialog)
+    assert dialog.result() == QDialog.DialogCode.Accepted
+    saved = Settings.load(tmp_path)
+    assert (saved.target_language, saved.tts_custom_voice) == ('is', recording_id)

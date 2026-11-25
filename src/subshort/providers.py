@@ -99,10 +99,10 @@ def _retry_after(value) -> float | None:
     return min(max(seconds, 0.0), _HTTP_RETRY_AFTER_CAP)
 
 
-def _run_worker(request: str) -> str:
+def _run_worker(request: str, *, timeout=_HTTP_TIMEOUT) -> str:
     try:
         command, cwd = _http_worker_command()
-        result = run_process(command, cwd=cwd, input=request, capture_output=True, text=True, timeout=_HTTP_TIMEOUT)
+        result = run_process(command, cwd=cwd, input=request, capture_output=True, text=True, timeout=timeout)
     except OSError:
         raise FatalProviderError("Không chạy được HTTP worker") from None
     except subprocess.TimeoutExpired:
@@ -286,20 +286,30 @@ class OpenAITranslator:
         check_cancelled()
         return [replace(segment, text=translated[item["id"]]) for segment, item in zip(segments, items)]
 
+
+def _compatible_base_url(base_url: str) -> str:
+    from urllib.parse import urlsplit
+    base = base_url.strip().rstrip("/")
+    try:
+        url = urlsplit(base)
+        if (url.scheme in {"http", "https"} and url.hostname and url.username is None
+                and url.password is None and "?" not in base and "#" not in base):
+            return base
+    except ValueError:
+        pass
+    raise ValueError("Base URL phải là HTTP(S), không chứa credential, query hoặc fragment")
+
+
 class OpenAICompatibleTranslator(OpenAITranslator):
     provider = "OpenAI-compatible"
     key_name = "OPENAI_COMPATIBLE_API_KEY"
 
     def __init__(self, api_key: str, model: str, base_url: str):
-        from urllib.parse import urlsplit
-        url = urlsplit(base_url.strip())
-        if (url.scheme not in {"http", "https"} or not url.hostname or url.username is not None
-                or url.password is not None or url.query or url.fragment):
-            raise ValueError("Base URL phải là HTTP(S), không chứa credential, query hoặc fragment")
+        base_url = _compatible_base_url(base_url)
         if not model.strip():
-            raise ValueError("Cần nhập model cho OpenAI-compatible")
+            raise ValueError("Cần chọn model cho OpenAI-compatible")
         super().__init__(api_key, model.strip())
-        self.endpoint = base_url.strip().rstrip("/") + "/chat/completions"
+        self.endpoint = base_url + "/chat/completions"
 
 
 class GeminiTranslator(OpenAITranslator):
@@ -309,6 +319,35 @@ class GeminiTranslator(OpenAITranslator):
 
     def __init__(self, api_key: str, model: str = "gemini-2.5-flash"):
         super().__init__(api_key, model)
+
+
+def list_llm_models(provider: str, api_key: str, base_url: str) -> list[str]:
+    service = {"openai": OpenAITranslator, "gemini": GeminiTranslator,
+               "openai_compatible": OpenAICompatibleTranslator}[provider]
+    if provider == "openai_compatible":
+        base = _compatible_base_url(base_url)
+    else:
+        base = service.endpoint.removesuffix("/chat/completions")
+        if not api_key:
+            raise ProviderError(f"Nhập khóa API {service.provider} trước khi tải model.")
+    headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
+    request = json.dumps({"url": base + "/models", "headers": headers, "timeout": 15})
+    try:
+        body = _read_answer(_run_worker(request, timeout=20), service.provider)
+    except _Transient as exc:
+        detail = {"timeout": "hết thời gian chờ", "network": "không kết nối được"}.get(exc.detail, exc.detail)
+        raise ProviderError(f"{service.provider}: {detail}") from None
+    try:
+        rows = json.loads(body)["data"]
+        if not isinstance(rows, list):
+            raise TypeError
+        ids = {row["id"] for row in rows if isinstance(row, dict) and isinstance(row.get("id"), str)
+               and row["id"] and row["id"].isprintable() and row["id"] == row["id"].strip()
+               and row["id"] != api_key}
+    except (ValueError, TypeError, KeyError):
+        raise ProviderError("Danh sách model không đúng định dạng.") from None
+    return sorted(ids, key=lambda model: (model.casefold(), model))
+
 
 class EdgeTTS:
     async def synthesize(self, text: str, output: Path, voice: str = "vi-VN-HoaiMyNeural"):

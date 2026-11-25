@@ -68,6 +68,7 @@ class Settings:
     slow_speed: float = 0.7
     final_speed: float = 1.0
     tts_voice: str = "vi-VN-HoaiMyNeural"
+    tts_speed: float = 1.0
     background_volume: float = 0.25
     separator_model_dir: str = ""
     separator_python: str = sys.executable
@@ -129,13 +130,26 @@ class Settings:
         return cls(root=root, **credentials,
                    **{k: v for k, v in data.items() if k in cls.__dataclass_fields__ and k != "root"})
 
+    def validate_llm(self) -> None:
+        if self.translation_provider not in ("openai", "gemini", "openai_compatible"):
+            raise ValueError("Chọn dịch vụ dịch văn bản được hỗ trợ.")
+        if self.vision_provider not in ("openai", "gemini"):
+            raise ValueError("Chọn OpenAI hoặc Gemini để nhận diện phụ đề cũ.")
+        if not isinstance(self.translation_model, str):
+            raise ValueError("translation_model phải là chuỗi")
+        if not isinstance(self.translation_base_url, str):
+            raise ValueError("translation_base_url phải là chuỗi")
+        if self.translation_provider == "openai_compatible":
+            from .providers import OpenAICompatibleTranslator
+            OpenAICompatibleTranslator(self.openai_compatible_api_key, self.translation_model, self.translation_base_url)
+        if not isinstance(self.vision_model, str) or not self.vision_model.strip():
+            raise ValueError("Nhập Model ID hỗ trợ hình ảnh để nhận diện phụ đề cũ.")
+
     def validate(self, mode: str | None = None) -> None:
         for name, supported in (
             ("asr_provider", ASR_MODELS),
             ("asr_device", {"cpu", "cuda"}),
             ("firered_type", {"aed", "llm"}),
-            ("translation_provider", {"openai", "gemini", "openai_compatible"}),
-            ("vision_provider", {"openai", "gemini"}),
             ("old_subtitle_mode", {"off", "manual", "auto"}),
             ("tts_provider", {"edge", "vieneu", "omnivoice", "none"}),
             ("tts_device", {"cpu", "cuda"}),
@@ -150,19 +164,13 @@ class Settings:
             value = getattr(self, name)
             if type(value) not in (int, float) or not math.isfinite(value) or value <= 0:
                 raise ValueError(f"{name} phải là số hữu hạn lớn hơn 0")
+        if type(self.tts_speed) not in (int, float) or not 0.5 <= self.tts_speed <= 2.0:
+            raise ValueError("Tốc độ đọc phải là số từ 0.5 đến 2.0")
         if type(self.background_volume) not in (int, float) or not math.isfinite(self.background_volume) or not 0 <= self.background_volume <= 1:
             raise ValueError("background_volume dùng đơn vị 0–1; không tự chuyển từ phần trăm")
         if not isinstance(self.source_language, str) or not isinstance(self.target_language, str) or not self.target_language.strip():
             raise ValueError("Ngôn ngữ nguồn phải là chuỗi; ngôn ngữ đích không được rỗng")
-        if not isinstance(self.translation_model, str):
-            raise ValueError("translation_model phải là chuỗi")
-        if not isinstance(self.translation_base_url, str):
-            raise ValueError("translation_base_url phải là chuỗi")
-        if self.translation_provider == "openai_compatible":
-            from .providers import OpenAICompatibleTranslator
-            OpenAICompatibleTranslator(self.openai_compatible_api_key, self.translation_model, self.translation_base_url)
-        if not isinstance(self.vision_model, str) or not self.vision_model.strip():
-            raise ValueError("vision_model không được rỗng")
+        self.validate_llm()
         if not isinstance(self.old_subtitle_region, str):
             raise ValueError("old_subtitle_region phải là JSON [x,y,w,h]")
         if self.old_subtitle_mode == "manual":

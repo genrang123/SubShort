@@ -30,7 +30,7 @@ def _synthesize(session, provider, voice_id, reference, raw):
 
 
 def render_preview(provider, voice_id, reference, python, options, media, *, recording=False,
-                   session=None):
+                   session=None, speed: float = 1.0):
     """Return WAV bytes for one preview.
 
     provider is edge/vieneu/omnivoice; reference is a resolved VoiceRegistry
@@ -61,7 +61,7 @@ def render_preview(provider, voice_id, reference, python, options, media, *, rec
         else:
             with TtsSession(python, **{**(options or {}), "provider": provider}) as created:
                 _synthesize(created, provider, voice_id, reference, raw)
-        media.normalize_clip(raw, wav)
+        media.normalize_clip(raw, wav, speed=speed)
         return wav.read_bytes()
 
 

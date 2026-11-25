@@ -27,6 +27,7 @@
   "slow_speed": 0.7,
   "final_speed": 1.0,
   "tts_voice": "vi-VN-HoaiMyNeural",
+  "tts_speed": 1.0,
   "background_volume": 0.25,
   "separator_model_dir": "",
   "separator_python": "",

@@ -85,10 +85,15 @@ class MediaAdapter:
             raise MediaError(f"{name} phải là số hữu hạn dương")
         return value
 
-    def normalize_clip(self, source: Path, output: Path):
+    def normalize_clip(self, source: Path, output: Path, *, speed: float = 1.0):
+        if type(speed) not in (int, float) or not 0.5 <= speed <= 2.0:
+            raise MediaError("Tốc độ đọc phải là số từ 0.5 đến 2.0")
         self.check()
         output.parent.mkdir(parents=True, exist_ok=True)
-        self.run([self.ffmpeg, "-y", "-i", str(source), "-vn", "-ac", "1", "-ar", "24000", "-c:a", "pcm_s16le", str(output)])
+        command = [self.ffmpeg, "-y", "-i", str(source), "-vn"]
+        if speed != 1.0:
+            command += ["-af", f"atempo={speed}"]
+        self.run([*command, "-ac", "1", "-ar", "24000", "-c:a", "pcm_s16le", str(output)])
 
     def prepare_audio(self, source: Path, output: Path, speed: float, duration: float):
         speed = self._positive(speed, "Speed")

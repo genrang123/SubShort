@@ -1,17 +1,20 @@
 """Qt presentation for the queue; the persisted Job remains the source of truth."""
+from datetime import datetime
 from html import escape
 from math import isfinite
 from pathlib import PureWindowsPath
+import re
 from urllib.parse import unquote, urlsplit
 
-from PySide6.QtCore import Qt
-from PySide6.QtGui import QColor
+from PySide6.QtCore import QEvent, Qt
+from PySide6.QtGui import QColor, QPalette
 from PySide6.QtWidgets import (
     QAbstractItemView, QCheckBox, QGridLayout, QHBoxLayout, QHeaderView, QLabel,
     QPlainTextEdit, QProgressBar, QPushButton, QSizePolicy, QSplitter, QStackedWidget,
-    QStyle, QStyledItemDelegate, QTabBar, QTabWidget, QTableWidget, QVBoxLayout, QWidget,
+    QStyle, QStyledItemDelegate, QStyleOptionViewItem, QTabBar, QTabWidget, QTableWidget, QVBoxLayout, QWidget,
 )
 
+from .sources import youtube_video_id
 from .ui import ELEVATED, ERROR, FOCUS, MUTED, SUCCESS, TEXT, WARNING, page_header
 
 STATUS = {'queued': 'Đang chờ', 'running': 'Đang xử lý', 'done': 'Hoàn tất',
@@ -23,6 +26,15 @@ STAGE = {'download': 'Đang tải nguồn', 'probe': 'Kiểm tra nguồn', 'asr'
          'subtitle_region': 'Xử lý vùng phụ đề', 'render': 'Xuất video', 'validate_output': 'Kiểm tra kết quả',
          'interrupted': 'Bị gián đoạn', 'no_audio': 'Giữ nguồn: không có âm thanh', 'done': 'Hoàn tất'}
 UPLOAD = {'uploading': 'Đang tải lên', 'done': 'Đã tải lên', 'failed': 'Tải lên lỗi', 'cancelled': 'Đã hủy tải'}
+COMPLETED_AT_COLUMN = 5
+JOB_COLUMNS = (
+    ('Video', 180),
+    ('Bước xử lý', 164),
+    ('Mốc pipeline', 120),
+    ('Trạng thái', 122),
+    ('Drive', 130),
+    ('Thời gian hoàn tất', None),
+)
 
 
 def button(layout, text, action, *, variant='', tooltip=''):
@@ -45,6 +57,10 @@ def label(layout, text='', *, name='', wrap=False):
 
 
 def video_name(source: str) -> str:
+    if '://' in source or source[:3].lower() == 'yt:':
+        video_id = youtube_video_id(source)
+        if video_id:
+            return f'YouTube · {video_id}'
     if '://' in source:
         try:
             url = urlsplit(source[source.index('https://'):] if ':https://' in source else source)
@@ -57,6 +73,17 @@ def video_name(source: str) -> str:
 
 def stage_name(stage: str) -> str:
     return STAGE.get(stage, stage.replace('_', ' '))
+
+
+def failure_summary(job) -> tuple[str, bool]:
+    if job.stage == 'translate':
+        if job.error in ('Thiếu OPENAI_API_KEY', 'Thiếu GEMINI_API_KEY', 'Thiếu OPENAI_COMPATIBLE_API_KEY'):
+            return 'Thiếu API key cho dịch vụ dịch văn bản.', True
+        if re.fullmatch(r'(OpenAI|Gemini|OpenAI-compatible) từ chối xác thực hoặc hạn mức \(HTTP [0-9]{3}\)', job.error):
+            return 'Dịch vụ dịch từ chối xác thực hoặc đã chạm hạn mức.', True
+        if job.error in ('HTTP 401 Unauthorized', 'HTTP 403 Forbidden'):
+            return 'Dịch vụ dịch từ chối xác thực hoặc quyền truy cập.', True
+    return ' '.join(job.error.split()) or 'Chưa có thông báo lỗi.', False
 
 
 def upload_text(metadata: dict) -> tuple[str, dict]:
@@ -75,6 +102,20 @@ def tip(text):
     return f'<p>{escape(str(text))}</p>' if text else ''
 
 
+def completed_at_text(metadata) -> tuple[str, str]:
+    if not isinstance(metadata, dict):
+        return '—', ''
+    raw = metadata.get('completed_at')
+    if not isinstance(raw, str) or not raw.strip():
+        return '—', ''
+    text = raw.strip()
+    try:
+        local = datetime.fromisoformat(text).astimezone()
+    except (ValueError, OverflowError, OSError):
+        return '—', ''
+    return local.strftime('%d/%m/%Y %H:%M:%S'), tip(text)
+
+
 def job_cells(job):
     upload, data = upload_text(job.metadata)
     stage = stage_name(job.stage) or ('Chuẩn bị' if job.status == 'running' else '—')
@@ -88,7 +129,43 @@ def job_cells(job):
         (f'{progress}%' if progress is not None else '—', tip('Mốc toàn pipeline'), progress),
         (STATUS.get(job.status, job.status), tip(job.error or job.output), job.status),
         (upload or '—', tip(data.get('error') or data.get('webViewLink') or upload), None),
+        (*completed_at_text(job.metadata), None) if job.status == 'done' else ('—', '', None),
     )
+
+
+def video_secondary(stage: str, upload: str) -> str:
+    return ' · '.join(part for part in (stage if stage != '—' else '',
+                                       f'Drive: {upload}' if upload and upload != '—' else '') if part)
+
+
+class VideoCell(QStyledItemDelegate):
+    compact = False
+
+    def paint(self, painter, option, index):
+        secondary = video_secondary(index.siblingAtColumn(1).data() or '',
+                                    index.siblingAtColumn(4).data() or '') if self.compact else ''
+        if not secondary:
+            super().paint(painter, option, index)
+            return
+        cell = QStyleOptionViewItem(option)
+        self.initStyleOption(cell, index)
+        name, cell.text = cell.text, ''
+        painter.save()
+        painter.setClipRect(cell.rect)
+        cell.widget.style().drawControl(QStyle.ControlElement.CE_ItemViewItem, cell, painter, cell.widget)
+        metrics = cell.fontMetrics
+        height = metrics.height()
+        line = cell.rect.adjusted(8, (cell.rect.height() - 2 * height) // 2, -8, 0)
+        line.setHeight(height)
+        painter.setFont(cell.font)
+        selected = cell.state & QStyle.StateFlag.State_Selected
+        foreground = cell.palette.color(QPalette.ColorRole.HighlightedText if selected else QPalette.ColorRole.Text)
+        for text, color in ((name, foreground), (secondary, foreground if selected else QColor(MUTED))):
+            painter.setPen(color)
+            painter.drawText(line, Qt.AlignmentFlag.AlignVCenter,
+                             metrics.elidedText(text, Qt.TextElideMode.ElideRight, line.width()))
+            line.translate(0, height)
+        painter.restore()
 
 
 class ProgressCell(QStyledItemDelegate):
@@ -133,7 +210,6 @@ class StatusCell(QStyledItemDelegate):
 class JobDetails(QWidget):
     def __init__(self, app):
         super().__init__(objectName='jobDetails')
-        self.setMinimumHeight(102)
         self.cache = None
         layout = QVBoxLayout(self)
         layout.setContentsMargins(8, 4, 8, 5)
@@ -146,8 +222,20 @@ class JobDetails(QWidget):
         self.heading.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
         header.setStretch(0, 1)
         button(header, 'Thu gọn', app.toggle_details)
-        tabs = QTabWidget()
-        layout.addWidget(tabs, 1)
+        self.failure = QWidget()
+        failure = QHBoxLayout(self.failure)
+        failure.setContentsMargins(0, 0, 0, 0)
+        layout.addWidget(self.failure)
+        self.failure_text = label(failure)
+        self.failure_text.setStyleSheet(f'color: {ERROR};')
+        self.failure_text.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+        failure.setStretch(0, 1)
+        self.failure_action = button(failure, '', lambda: self.recover_failure(app))
+        self.failure_api = False
+        self.failure_text.installEventFilter(self)
+        self.failure.hide()
+        self.tabs = QTabWidget()
+        layout.addWidget(self.tabs, 1)
         self.views = []
         for title in ('Tổng quan', 'Pipeline', 'Log phiên', 'Kết quả'):
             page = QWidget()
@@ -173,8 +261,40 @@ class JobDetails(QWidget):
             view.setAccessibleName(title)
             view.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Ignored)
             body.addWidget(view, 1)
-            tabs.addTab(page, title)
+            self.tabs.addTab(page, title)
             self.views.append(view)
+        self.tabs.currentChanged.connect(self.update_minimum_height)
+
+    def update_minimum_height(self):
+        layout = self.layout()
+        margins = layout.contentsMargins()
+        chrome = sum(widget.sizeHint().height() + layout.spacing()
+                     for widget in (self.header, self.failure) if not widget.isHidden())
+        view = self.views[self.tabs.currentIndex()]
+        page = self.tabs.currentWidget()
+        text_height = (2 * view.fontMetrics().lineSpacing() + 2 * view.frameWidth()
+                       + round(2 * view.document().documentMargin()))
+        height = (margins.top() + margins.bottom() + chrome + self.tabs.tabBar().sizeHint().height()
+                  + 2 * self.tabs.style().pixelMetric(QStyle.PixelMetric.PM_DefaultFrameWidth)
+                  + page.layout().minimumSize().height() + text_height)
+        if self.minimumHeight() != height:
+            self.setMinimumHeight(height)
+
+    def eventFilter(self, watched, event):
+        if watched is self.failure_text and event.type() == QEvent.Type.Resize:
+            self.elide_failure()
+        return super().eventFilter(watched, event)
+
+    def elide_failure(self):
+        text = self.failure_text
+        text.setText(text.fontMetrics().elidedText(text.accessibleName(), Qt.TextElideMode.ElideRight,
+                                                  text.contentsRect().width()))
+
+    def recover_failure(self, app):
+        if self.failure_api:
+            app.api()
+        else:
+            self.tabs.setCurrentWidget(self.views[2].parentWidget())
 
     def render(self, job, logs, stages, can_review, voice):
         name = video_name(job.source)
@@ -205,8 +325,23 @@ class JobDetails(QWidget):
         if upload:
             output_info.append(f'Drive: {upload}')
         output_info.extend(str(data[key]) for key in ('error', 'webViewLink') if data.get(key))
+        failed = job.status == 'failed'
+        log = '\n'.join(logs)
+        if failed and job.error:
+            log = f'Lỗi: {job.error}\n\n{log}'
         texts = ('\n'.join(overview), '\n'.join(pipeline),
-                 '\n'.join(logs) or 'Chưa có log cho video này trong phiên hiện tại.', '\n'.join(output_info))
+                 log or 'Chưa có log cho video này trong phiên hiện tại.', '\n'.join(output_info))
+        if failed:
+            summary, self.failure_api = failure_summary(job)
+            line = ' · '.join(filter(None, ('Lỗi', stage_name(job.stage), summary)))
+            self.failure_text.setAccessibleName(line)
+            self.failure_text.setToolTip(tip(line))
+            self.failure_action.setText('Mở cài đặt API' if self.failure_api else 'Xem log video')
+            self.failure_action.setToolTip(
+                'Kiểm tra API key, quyền và hạn mức của dịch vụ đã dùng cho video. '
+                'Thay đổi dịch vụ mặc định không đổi cấu hình của video đã thêm.' if self.failure_api else '')
+            self.elide_failure()
+        self.failure.setVisible(failed)
         self.heading.setText(name)
         self.heading.setToolTip(tip(job.source))
         for view, text, old in zip(self.views, texts, self.cache if self.cache and self.cache[0] == job.id else (None,) * 4):
@@ -214,9 +349,12 @@ class JobDetails(QWidget):
                 view.setPlainText(text)
         self.cache = (job.id, *texts)
         self.activity.setVisible(job.status == 'running' or (data.get('status') == 'uploading' and not data.get('size')))
-        self.review.setEnabled(can_review and bool(job.metadata.get('review_transcript')))
+        has_review = bool(job.metadata.get('review_transcript'))
+        self.review.setVisible(has_review)
+        self.review.setEnabled(can_review and has_review)
         self.file.setEnabled(bool(job.output))
         self.folder.setEnabled(bool(job.output))
+        self.update_minimum_height()
 
 
 def build_workspace(app):
@@ -254,7 +392,6 @@ def build_workspace(app):
     nav.addSpacing(10)
     configuration = label(nav, 'CẤU HÌNH', name='navSection')
     app.voices_button = nav_item('Giọng nói', icons.SP_MediaVolume, app.voices)
-    nav_item('API && dịch vụ', icons.SP_DriveNetIcon, app.api)
     nav_item('Cài đặt', icons.SP_FileDialogDetailedView, app.configure_pipeline)
     nav.addStretch()
 
@@ -264,20 +401,20 @@ def build_workspace(app):
     main.setSpacing(6)
     header = QGridLayout()
     main.addLayout(header)
-    title = QWidget()
+    title = app.queue_title = QWidget()
     titles = QVBoxLayout(title)
     titles.setContentsMargins(0, 0, 0, 0)
     titles.setSpacing(1)
     page_header(titles, 'Hàng đợi video', 'Thêm nguồn, theo dõi xử lý và mở thành phẩm.')
     app.default_voice = label(titles, name='muted')
     app.default_voice.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
-    sources = QWidget()
+    sources = app.sources = QWidget()
     source_actions = QHBoxLayout(sources)
     source_actions.setContentsMargins(0, 0, 0, 0)
     app.urls_button = button(source_actions, 'Thêm URL / ID', app.add_urls)
     app.add_button = button(source_actions, '+ Thêm video', app.add, variant='primary')
 
-    summary = QWidget(objectName='queueSummary')
+    summary = app.summary = QWidget(objectName='queueSummary')
     summary_layout = QHBoxLayout(summary)
     summary_layout.setContentsMargins(8, 4, 8, 4)
     app.counts = {}
@@ -290,15 +427,16 @@ def build_workspace(app):
 
     toolbar = QGridLayout()
     main.addLayout(toolbar)
-    batches, selection = QWidget(), QWidget()
+    batches, selection = app.batch_actions, app.selection_actions = QWidget(), QWidget()
     batch_actions, selected_actions = QHBoxLayout(batches), QHBoxLayout(selection)
     for actions in (batch_actions, selected_actions):
         actions.setContentsMargins(0, 0, 0, 0)
         actions.setSpacing(5)
     app.start_button = button(batch_actions, 'Chạy hàng đợi', app.run, variant='primary',
-                              tooltip='Chạy cả video đang chờ và video bị lỗi.')
+                              tooltip='Chạy các video đang chờ và thử lại các video lỗi.')
     app.cancel_button = button(batch_actions, 'Dừng xử lý / tải lên', app.request_stop,
                                tooltip='Yêu cầu dừng cả xử lý và tải lên nếu đang chạy.')
+    app.open_video_button = button(selected_actions, 'Mở video', app.open_current_file, variant='primary')
     app.details_button = button(selected_actions, 'Chi tiết', app.toggle_details)
     app.retry_button = button(selected_actions, 'Thử lại', app.retry, tooltip='Đưa video lỗi hoặc đã hủy về hàng đợi.')
     app.remove_button = button(selected_actions, 'Xóa', app.remove_jobs, variant='danger',
@@ -333,8 +471,8 @@ def build_workspace(app):
     empty.addStretch()
     app.queue_stack.addWidget(app.empty_queue)
 
-    jobs = app.jobs = QTableWidget(0, 5)
-    jobs.setHorizontalHeaderLabels(('Video', 'Bước xử lý', 'Mốc pipeline', 'Trạng thái', 'Drive'))
+    jobs = app.jobs = QTableWidget(0, len(JOB_COLUMNS))
+    jobs.setHorizontalHeaderLabels([title for title, _ in JOB_COLUMNS])
     jobs.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
     jobs.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
     jobs.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
@@ -342,10 +480,19 @@ def build_workspace(app):
     jobs.setShowGrid(False)
     jobs.verticalHeader().hide()
     jobs.verticalHeader().setDefaultSectionSize(40)
-    for column, width in enumerate((180, 164, 120, 122, 130)):
-        jobs.setColumnWidth(column, width)
-    jobs.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+    header_view = jobs.horizontalHeader()
+    completed_width = max(
+        144,
+        header_view.fontMetrics().horizontalAdvance(JOB_COLUMNS[COMPLETED_AT_COLUMN][0]) + 24,
+        jobs.fontMetrics().horizontalAdvance('88/88/8888 88:88:88') + 24,
+    )
+    for column, (_, width) in enumerate(JOB_COLUMNS):
+        jobs.setColumnWidth(column, completed_width if column == COMPLETED_AT_COLUMN else width)
+    header_view.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+    header_view.moveSection(header_view.visualIndex(COMPLETED_AT_COLUMN), 0)
     jobs.horizontalHeaderItem(2).setToolTip('Mốc toàn pipeline, không phải phần trăm của bước hiện tại.')
+    video_cell = VideoCell(jobs)
+    jobs.setItemDelegateForColumn(0, video_cell)
     jobs.setItemDelegateForColumn(2, ProgressCell(jobs))
     jobs.setItemDelegateForColumn(3, StatusCell(jobs))
     jobs.doubleClicked.connect(lambda index: app.open_output(app.job_id_at(index.row())))
@@ -385,7 +532,8 @@ def build_workspace(app):
     footer.setContentsMargins(0, 0, 0, 0)
     footer.setSpacing(4)
     status.addPermanentWidget(controls)
-    app.open_button = button(footer, 'Kết quả', app.open_current_folder, tooltip='Hiện đúng file kết quả trong Explorer.')
+    app.open_button = button(footer, 'Hiện trong Explorer', app.open_current_folder,
+                             tooltip='Hiện đúng file kết quả trong Explorer.')
     app.upload_button = button(footer, 'Drive', app.drive, tooltip='Cấu hình và tải video lên Google Drive.')
     app.log_toggle = QCheckBox('Log')
     app.log_toggle.setToolTip('Hiện log xử lý chung')
@@ -399,8 +547,14 @@ def build_workspace(app):
         compact, narrow, short = app.width() < 960, app.width() < 620, app.height() < 390
         if last == (compact, narrow, short):
             return
+        focus = app.focusWidget()
+        compact_changed = last is None or compact != last[0]
+        short_changed = last is None or short != last[2]
         last = (compact, narrow, short)
-        app.details.header.setVisible(not short)
+        app.short_workspace = short
+        if short_changed:
+            app.details.header.setVisible(not short)
+            app.details.update_minimum_height()
         title.findChild(QLabel, 'muted').setVisible(not short)
         rail.setFixedWidth(55 if compact else 222)
         brand.setText('S' if compact else 'SubShort')
@@ -418,8 +572,14 @@ def build_workspace(app):
         toolbar.removeWidget(selection)
         toolbar.addWidget(selection, int(narrow), int(not narrow), Qt.AlignmentFlag.AlignLeft)
         toolbar.setColumnStretch(0, 1)
-        for column in (1, 4):
-            jobs.setColumnHidden(column, compact)
+        if compact_changed:
+            for column in (1, 4):
+                jobs.setColumnHidden(column, compact)
+            video_cell.compact = compact
+            jobs.verticalHeader().setDefaultSectionSize(max(48, 2 * jobs.fontMetrics().height() + 12) if compact else 40)
+            jobs.viewport().update()
+        if hasattr(app, 'poll_timer'):
+            app.sync_actions(previous_focus=focus)
 
     app.adapt_workspace = adapt
     adapt()

@@ -16,12 +16,13 @@ from subshort.providers import Segment
 from subshort.queue import JobQueue
 
 
-@pytest.mark.parametrize('failure,mode,overflow', [
-    (failure, mode, False)
+@pytest.mark.parametrize('failure,mode,overflow,tts_speed', [
+    (failure, mode, False, 1.0)
     for mode in ('subtitle_dub', 'subtitle', 'dub')
     for failure in (None, 'render', 'validate', 'cancel')
-] + [pytest.param(None, 'dub', True, id='dubbing-overflow')])
-def test_real_pipeline_duration_and_publish(tmp_path, monkeypatch, failure, mode, overflow):
+] + [pytest.param(None, 'dub', True, 1.0, id='dubbing-overflow'),
+     pytest.param(None, 'dub', True, 2.0, id='faster-dubbing')])
+def test_real_pipeline_duration_and_publish(tmp_path, monkeypatch, failure, mode, overflow, tts_speed):
     ffmpeg, ffprobe = shutil.which('ffmpeg'), shutil.which('ffprobe')
     if not ffmpeg or not ffprobe:
         pytest.skip('FFmpeg unavailable')
@@ -62,6 +63,7 @@ def test_real_pipeline_duration_and_publish(tmp_path, monkeypatch, failure, mode
     monkeypatch.setattr('subshort.pipeline.separate_background', separate)
     queue = JobQueue(tmp_path / 'queue.json')
     settings = Settings(root=tmp_path, ffmpeg=ffmpeg, ffprobe=ffprobe, asr_model=str(tmp_path), tts_provider='vieneu', tts_model=str(tmp_path), tts_hf_cache=str(tmp_path), tts_python=sys.executable, slow_speed=.8, final_speed=1.25)
+    settings.tts_speed = tts_speed
     settings.keep_original_audio = settings.separate_background = True
     settings.separator_model_dir = str(tmp_path)
     job = Job('timing', str(video), 'vi', mode=mode)
@@ -94,12 +96,13 @@ def test_real_pipeline_duration_and_publish(tmp_path, monkeypatch, failure, mode
         assert job.status == 'done', job.error
         assert Path(job.output) == final
         timing = json.loads((work / 'pipeline_timing.json').read_text())
-        duration = 3.2 if overflow else 2
+        freezes = overflow and tts_speed == 1.0
+        duration = 3.2 if freezes else 2
         assert timing['version'] == 4
         assert timing['policy'] == ('source-windows-v1' if mode == 'subtitle' else 'unbounded-dubbing-v1')
         assert timing['picture_speed'] == pytest.approx(1)
         assert timing['final_duration_seconds'] == pytest.approx(duration)
-        assert timing['freeze_seconds'] == pytest.approx(1.2 if overflow else 0)
+        assert timing['freeze_seconds'] == pytest.approx(1.2 if freezes else 0)
         assert MediaAdapter(ffmpeg, ffprobe).probe(final)['duration'] == pytest.approx(duration, abs=.15)
         assert translated == ['vi']
         stages = job.metadata['stages']
@@ -114,7 +117,11 @@ def test_real_pipeline_duration_and_publish(tmp_path, monkeypatch, failure, mode
         if mode != 'subtitle':
             timeline = json.loads((work / 'timeline.json').read_text())
             assert timeline[1]['actual_start_seconds'] >= timeline[0]['actual_end_seconds']
-            if overflow:
+            if tts_speed != 1.0:
+                assert [row['duration_seconds'] for row in timeline] == pytest.approx([1, 1], abs=.05)
+                assert timeline[1]['requested_start_seconds'] == .5
+                assert timeline[1]['actual_start_seconds'] == pytest.approx(1, abs=.05)
+            elif overflow:
                 assert [row['text'] for row in timeline] == ['first', 'second']
                 assert [row['duration_seconds'] for row in timeline] == [2, 2]
                 assert timeline[1]['requested_start_seconds'] == .5

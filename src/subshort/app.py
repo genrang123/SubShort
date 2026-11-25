@@ -3,9 +3,8 @@ from pathlib import Path
 from uuid import uuid4
 from PySide6.QtCore import QItemSelectionModel, QSignalBlocker, Qt, QTimer
 from PySide6.QtWidgets import (
-    QApplication, QCheckBox, QComboBox, QDialog, QDialogButtonBox, QFileDialog,
-    QFormLayout, QGroupBox, QHBoxLayout, QInputDialog, QLabel, QLineEdit, QMainWindow,
-    QMenu, QMessageBox, QScrollArea, QTableWidgetItem,
+    QApplication, QComboBox, QDialog, QFileDialog, QHBoxLayout, QInputDialog,
+    QLabel, QMainWindow, QMenu, QMessageBox, QTableWidgetItem,
     QTabWidget, QVBoxLayout, QWidget,
 )
 from .models import Settings, Job
@@ -22,7 +21,7 @@ from collections import deque
 from .credentials import CredentialError
 from .pipeline import Pipeline
 from .ui import apply_theme, ask_confirmation, page_header, show_message
-from .queue_view import build_workspace, button, job_cells, label, tip
+from .queue_view import COMPLETED_AT_COLUMN, build_workspace, button, job_cells, label, tip, video_secondary
 from .voices import VoiceError, VoiceRegistry
 from .voices_dialog import VoicesDialog, preset_key, voice_description
 
@@ -78,16 +77,24 @@ class App(QMainWindow):
     def can_mutate(self):
         return not (self.batch.running or self.upload.running or self.closing or self.queue.load_error)
 
-    def sync_actions(self, *_):
+    def sync_actions(self, *_, previous_focus=None):
+        focus = previous_focus or self.focusWidget()
         writable = self.can_mutate()
         selected = [self.snapshot[job_id] for job_id in self.selected_jobs() if job_id in self.snapshot]
         job = self.current_job()
+        completed = self.queue_tabs.currentIndex() == 1
+        empty_active = not completed and self.queue_stack.currentWidget() is self.empty_queue
+        can_start = writable and any(j.status in PENDING_STATUSES for j in self.snapshot.values())
+        retryable = any(j.status in RETRYABLE_STATUSES for j in selected)
+        can_open = completed and len(selected) == 1 and bool(job and job.status == 'done' and job.output) and not self.closing
         for control in (self.add_button, self.urls_button, self.empty_add, self.empty_urls):
             control.setEnabled(writable)
-        self.start_button.setEnabled(writable and any(j.status in PENDING_STATUSES for j in self.snapshot.values()))
         self.cancel_button.setEnabled(not self.stopping and not self.closing and any(self.worker_state))
-        self.cancel_button.setText('Đang dừng…' if self.stopping else 'Dừng xử lý / tải lên')
-        self.retry_button.setEnabled(writable and any(j.status in RETRYABLE_STATUSES for j in selected))
+        batch, upload = self.worker_state
+        self.cancel_button.setText('Đang dừng…' if self.stopping else
+                                   'Dừng xử lý / tải lên' if batch and upload else
+                                   'Dừng tải lên' if upload else 'Dừng xử lý')
+        self.retry_button.setEnabled(writable and retryable)
         self.remove_button.setEnabled(writable and bool(selected) and all(j.status != 'running' for j in selected))
         self.upload_button.setEnabled(not self.closing and not self.queue.load_error)
         self.open_button.setEnabled(bool(job and job.output) and not self.closing)
@@ -99,10 +106,47 @@ class App(QMainWindow):
             self.details.render(job, [line for _, line in events], [stage for stage, _ in events if stage],
                                 writable, self.describe_voice(job))
         self.details_button.setText('Chi tiết' if self.details.isHidden() else 'Ẩn chi tiết')
+        short_details = self.short_workspace and not self.details.isHidden()
+        self.queue_stack.setVisible(not short_details)
+        self.log_frame.setVisible(not short_details and self.log_toggle.isChecked())
+        self.summary.setVisible(not short_details and (completed or bool(self.snapshot) or bool(self.queue.load_error)))
+        self.queue_title.setVisible(not short_details)
+        self.sources.setVisible(not short_details and not empty_active)
+        self.queue_tabs.setVisible(not short_details)
+        self.empty_add.setVisible(not completed and not self.queue.load_error)
+        self.empty_urls.setVisible(not completed and not self.queue.load_error)
+        self.start_button.setVisible(not completed and not empty_active and not short_details)
+        self.start_button.setEnabled(not completed and not short_details and can_start)
+        self.cancel_button.setVisible(self.stopping or batch or upload)
+        self.open_video_button.setVisible(can_open)
+        self.open_video_button.setEnabled(can_open)
+        self.details_button.setVisible(bool(selected))
+        self.remove_button.setVisible(bool(selected))
+        self.retry_button.setVisible(retryable)
+        for group, controls in (
+            (self.batch_actions, (self.start_button, self.cancel_button)),
+            (self.selection_actions, (self.open_video_button, self.details_button, self.retry_button, self.remove_button)),
+        ):
+            group.setVisible(any(not control.isHidden() for control in controls))
+        variant = 'primary' if not completed and writable and not can_start else ''
+        if self.add_button.property('variant') != variant:
+            self.add_button.setProperty('variant', variant)
+            style = self.add_button.style()
+            style.unpolish(self.add_button)
+            style.polish(self.add_button)
+            self.add_button.update()
+        if focus is not None and not focus.isVisible():
+            targets = (self.details_button if short_details else None, self.open_video_button, self.jobs,
+                       self.empty_add, self.queue_tabs)
+            for target in targets:
+                if target is not None and target.isVisible() and target.isEnabled():
+                    target.setFocus()
+                    break
 
     def toggle_details(self):
+        focus = self.focusWidget()
         self.details.setVisible(self.details.isHidden() and self.current_job() is not None)
-        self.sync_actions()
+        self.sync_actions(previous_focus=focus)
 
     def queue_menu(self, point):
         row = self.jobs.indexAt(point).row()
@@ -140,7 +184,9 @@ class App(QMainWindow):
                 if not self.jobs.isRowHidden(index.row())]
 
     def filter_queue(self):
+        focus = self.focusWidget()
         completed = self.queue_tabs.currentIndex() == 1
+        self.jobs.setColumnHidden(COMPLETED_AT_COLUMN, not completed)
         has_rows = False
         flags = QItemSelectionModel.SelectionFlag
         selection = self.jobs.selectionModel()
@@ -156,13 +202,11 @@ class App(QMainWindow):
             if self.jobs.currentRow() >= 0 and self.jobs.isRowHidden(self.jobs.currentRow()):
                 selection.clearCurrentIndex()
         self.queue_stack.setCurrentWidget(self.jobs if has_rows else self.empty_queue)
-        self.empty_add.setVisible(not completed)
-        self.empty_urls.setVisible(not completed)
         self.empty_title.setText('Không đọc được hàng đợi' if self.queue.load_error else
                                  'Chưa có video hoàn tất' if completed else 'Chưa có video trong hàng đợi')
         self.empty_hint.setText(self.queue.load_error or ('Video đã xử lý xong sẽ xuất hiện ở đây.' if completed else
                                                          'Thêm video trên máy hoặc dán URL để bắt đầu.'))
-        self.sync_actions()
+        self.sync_actions(previous_focus=focus)
 
     def refresh(self):
         snapshot = self.queue.snapshot()
@@ -176,7 +220,8 @@ class App(QMainWindow):
                 self.jobs.removeRow(row)
             self.jobs.setRowCount(len(snapshot))
             for row, job in enumerate(snapshot):
-                for column, (text, tooltip, value) in enumerate(job_cells(job)):
+                cells = job_cells(job)
+                for column, (text, tooltip, value) in enumerate(cells):
                     item = self.jobs.item(row, column)
                     if item is None:
                         item = QTableWidgetItem()
@@ -187,6 +232,11 @@ class App(QMainWindow):
                         item.setToolTip(tooltip)
                     if item.data(Qt.ItemDataRole.UserRole) != value:
                         item.setData(Qt.ItemDataRole.UserRole, value)
+                    if column == 0:
+                        secondary = video_secondary(cells[1][0], cells[4][0])
+                        accessible = f'{text}\n{secondary}' if secondary else text
+                        if item.data(Qt.ItemDataRole.AccessibleTextRole) != accessible:
+                            item.setData(Qt.ItemDataRole.AccessibleTextRole, accessible)
                 if current and job.id == current and self.jobs.currentRow() != row:
                     self.jobs.setCurrentCell(row, 0, flags.NoUpdate)
         voice = 'Giọng mặc định: ' + self.describe_voice()
@@ -235,9 +285,10 @@ class App(QMainWindow):
         except OSError as exc:
             show_message(self, 'Không mở được kết quả', str(exc))
 
-    def configure_pipeline(self):
+    def configure_pipeline(self, *, api_provider=None):
         from .settings_dialog import SettingsDialog
-        run_dialog(SettingsDialog(self, self.settings, on_saved=self.refresh))
+        run_dialog(SettingsDialog(self, self.settings, on_saved=self.refresh, api_provider=api_provider,
+                                  preset_cache=self.preset_cache))
 
     def drive(self):
         from .drive_dialog import DriveDialog
@@ -521,7 +572,7 @@ class App(QMainWindow):
         self.log_text.appendPlainText("\n".join(fresh))
 
     def toggle_log(self, checked):
-        self.log_frame.setVisible(checked)
+        self.sync_actions()
         if checked:
             self.log_last = ""
             self.log_text.clear()
@@ -553,96 +604,14 @@ class App(QMainWindow):
         self.upload.cancel()
 
     def api(self):
-        run_dialog(CredentialDialog(self, self.settings))
+        job = self.current_job()
+        provider = self.settings.for_job(job).translation_provider if job else ''
+        self.configure_pipeline(api_provider=provider)
 
 
 def fit_dialog(dialog, width, height):
     area = dialog.screen().availableGeometry().size()
     dialog.resize(min(width, area.width() - 32), min(height, area.height() - 56))
-
-
-class CredentialDialog(QDialog):
-    def __init__(self, parent, settings):
-        super().__init__(parent)
-        self.settings = settings
-        self.setWindowTitle("Cài đặt API và dịch văn bản")
-        fit_dialog(self, 660, 550)
-        shell = QVBoxLayout(self)
-        scroll = QScrollArea(widgetResizable=True)
-        shell.addWidget(scroll, 1)
-        content = QWidget()
-        scroll.setWidget(content)
-        layout = QVBoxLayout(content)
-        translation = QGroupBox("1. Dịch vụ dịch văn bản")
-        layout.addWidget(translation)
-        form = QFormLayout(translation)
-        form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapLongRows)
-        provider = QComboBox()
-        provider.addItems(("openai", "gemini", "openai_compatible"))
-        if provider.findText(settings.translation_provider) == -1:
-            provider.addItem(settings.translation_provider)
-        provider.setCurrentText(settings.translation_provider)
-        self.api_variables = {
-            "translation_provider": provider,
-            "translation_base_url": QLineEdit(settings.translation_base_url),
-            "translation_model": QLineEdit(settings.translation_model),
-        }
-        for caption, widget in zip(("Dịch vụ", "Base URL", "Model ID"), self.api_variables.values()):
-            form.addRow(caption, widget)
-        keys = QGroupBox("2. API key — nhập vào đúng dịch vụ")
-        layout.addWidget(keys)
-        form = QFormLayout(keys)
-        form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapLongRows)
-        self.fields = {}
-        for field, caption in (("openai_api_key", "OpenAI API key"), ("gemini_api_key", "Gemini API key"),
-                               ("openai_compatible_api_key", "OpenAI-compatible API key")):
-            row = QHBoxLayout()
-            entry = QLineEdit()
-            entry.setEchoMode(QLineEdit.EchoMode.Password)
-            delete = QCheckBox("Xóa key")
-            row.addWidget(entry, 1)
-            row.addWidget(delete)
-            saved = "Đã lưu" if getattr(settings, field) else "Chưa có"
-            form.addRow(f"{caption} ({saved})", row)
-            self.fields[field] = entry, delete
-        box = QDialogButtonBox(QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel)
-        box.button(QDialogButtonBox.StandardButton.Save).setText("Lưu cấu hình")
-        box.button(QDialogButtonBox.StandardButton.Save).setProperty('variant', 'primary')
-        box.button(QDialogButtonBox.StandardButton.Cancel).setText("Hủy")
-        box.accepted.connect(self.accept)
-        box.rejected.connect(self.reject)
-        shell.addWidget(box)
-
-    def accept(self):
-        if self.validate():
-            super().accept()
-
-    def validate(self):
-        previous = {field: getattr(self.settings, field) for field in self.fields}
-        previous.update({name: getattr(self.settings, name) for name in self.api_variables})
-        for field, (entry, delete) in self.fields.items():
-            value = "" if delete.isChecked() else entry.text().strip() or previous[field]
-            setattr(self.settings, field, value)
-        for name, widget in self.api_variables.items():
-            value = widget.currentText() if isinstance(widget, QComboBox) else widget.text()
-            setattr(self.settings, name, value.strip())
-        try:
-            if self.settings.translation_provider == "openai_compatible":
-                from .providers import OpenAICompatibleTranslator
-                OpenAICompatibleTranslator(self.settings.openai_compatible_api_key,
-                                           self.settings.translation_model, self.settings.translation_base_url)
-            self.settings.save()
-        except ValueError as exc:
-            for field, value in previous.items():
-                setattr(self.settings, field, value)
-            show_message(self, "Cấu hình API không hợp lệ", str(exc))
-            return False
-        except (CredentialError, OSError):
-            for field, value in previous.items():
-                setattr(self.settings, field, value)
-            show_message(self, "Không hoàn tất lưu credential", "Không hoàn tất lưu cấu hình an toàn. Bản credential được bảo vệ có thể đã được cập nhật; hãy mở lại ứng dụng để đọc trạng thái đã lưu trước khi thử lại.")
-            return False
-        return True
 
 
 def launch(root: Path):

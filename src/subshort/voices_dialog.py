@@ -21,7 +21,7 @@ from .voices import VoiceError, VoiceRegistry
 from .voice_preview import play_preview, render_preview, stop_preview
 
 PROVIDERS = {'edge': 'Edge', 'vieneu': 'VieNeu', 'omnivoice': 'OmniVoice'}
-FILTERS = {'gender': 'Giới tính', 'region': 'Vùng', 'style': 'Phong cách'}
+FILTERS = {'locale': 'Ngôn ngữ', 'gender': 'Giới tính', 'region': 'Vùng', 'style': 'Phong cách'}
 FAVORITES = 'voice_library_favorites'
 
 
@@ -151,7 +151,7 @@ def _load_presets(execution, python, options):
                  'gender': {'Male': 'Nam', 'Female': 'Nữ'}.get(item.get('Gender'), ''),
                  'style': item.get('VoiceTag', {}).get('VoicePersonalities', []),
                  'locale': item['Locale']}
-                for item in asyncio.run(catalog()) if item.get('Locale') == 'vi-VN'], None
+                for item in asyncio.run(asyncio.wait_for(catalog(), timeout=20))], None
     with execution.activate():
         session = TtsSession(python, **options)
         try:
@@ -695,7 +695,8 @@ class VoicesDialog(QDialog):
         execution = self._preview_execution = Execution()
         self.stop_button.show()
         self.status.setText(f'Đang chuẩn bị âm thanh: {name}…')
-        cache_key = key, recording
+        speed = 1.0 if recording else self.settings.tts_speed
+        cache_key = (key, recording) if recording else (key, recording, speed)
         cached = self._preview_cache.get(cache_key)
         self._loading_key = None if cached is not None else key
         self._sync_selection()
@@ -712,7 +713,7 @@ class VoicesDialog(QDialog):
                         session = (warm.take(warm_key)
                                    if provider != 'edge' and not recording else None)
                         wav = render_preview(provider, voice, reference, python, options, media,
-                                             recording=recording, session=session)
+                                             recording=recording, session=session, speed=speed)
                 return execution, cache_key, name, wav, ''
             except Exception as exc:
                 return execution, cache_key, name, None, str(exc) or type(exc).__name__

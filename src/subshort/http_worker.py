@@ -11,14 +11,22 @@ import urllib.error
 import urllib.request
 
 
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
 def main():
     # A frozen windowed build has no sys.stdin/sys.stdout; the parent's pipes are still fd 0/1.
     stdin = sys.stdin or open(0, encoding="utf-8", closefd=False)
     stdout = sys.stdout or open(1, "w", encoding="utf-8", closefd=False)
     request = json.load(stdin)
     try:
-        req = urllib.request.Request(request["url"], request["payload"].encode(), request["headers"])
-        with urllib.request.urlopen(req, timeout=request["timeout"]) as response:
+        payload = request.get("payload")
+        req = urllib.request.Request(request["url"], None if payload is None else payload.encode(), request["headers"])
+        open_request = (urllib.request.build_opener(_NoRedirect()).open
+                        if payload is None else urllib.request.urlopen)
+        with open_request(req, timeout=request["timeout"]) as response:
             answer = {"ok": True, "body": response.read().decode("utf-8", "replace")}
     except urllib.error.HTTPError as exc:
         answer = {"ok": False, "status": exc.code, "body": exc.read().decode("utf-8", "replace")}

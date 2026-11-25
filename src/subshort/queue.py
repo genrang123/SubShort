@@ -1,3 +1,4 @@
+from datetime import datetime
 from pathlib import Path
 from contextlib import suppress
 import copy
@@ -90,6 +91,7 @@ class JobQueue:
             elif job.status == "done" and not (job.output and Path(job.output).is_file()):
                 job.status, job.output = "failed", ""
                 job.error = "Kết quả không còn tồn tại"
+                job.metadata.pop("completed_at", None)
                 changed = True
             upload = job.metadata.get("upload")
             if job.status == "done" and isinstance(upload, dict) and upload.get("status") == "uploading":
@@ -185,7 +187,15 @@ class JobQueue:
             index = self._find(job.id)
             if index is None:
                 raise KeyError(job.id)
-            previous, self.jobs[index] = self.jobs[index], copy.deepcopy(job)
+            previous = self.jobs[index]
+            updated = copy.deepcopy(job)
+            if updated.status == "done" and previous.status != "done":
+                updated.metadata["completed_at"] = datetime.now().astimezone().isoformat(timespec="seconds")
+            elif updated.status == "done" and "completed_at" in previous.metadata:
+                updated.metadata["completed_at"] = previous.metadata["completed_at"]
+            else:
+                updated.metadata.pop("completed_at", None)
+            self.jobs[index] = updated
             try:
                 self._save_locked()
             except BaseException:

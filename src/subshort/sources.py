@@ -3,7 +3,7 @@ from pathlib import Path
 import math
 import re
 import tempfile
-from urllib.parse import urlsplit
+from urllib.parse import parse_qs, unquote, urlsplit
 
 from .execution import Cancelled, check_cancelled
 from .providers import FatalProviderError, ProviderError
@@ -48,6 +48,28 @@ def _source(value):
     except ValueError:
         raise ProviderError("Chỉ hỗ trợ URL HTTPS công khai từ YouTube, Douyin, Facebook hoặc Google Drive") from None
     return kind, text
+
+
+def youtube_video_id(source: str) -> str:
+    try:
+        kind, value = _source(source)
+    except ProviderError:
+        return ''
+    if kind != 'youtube':
+        return ''
+    url = urlsplit(value)
+    path = url.path.rstrip('/')
+    segments = path.split('/')
+    if url.hostname == 'youtu.be':
+        candidate = unquote(segments[1]) if len(segments) == 2 else ''
+    elif path == '/watch':
+        ids = parse_qs(url.query, keep_blank_values=True).get('v', [])
+        candidate = ids[0] if len(ids) == 1 else ''
+    elif len(segments) == 3 and segments[1] in ('shorts', 'live', 'embed'):
+        candidate = unquote(segments[2])
+    else:
+        return ''
+    return candidate if re.fullmatch(_ID_PATTERNS['youtube'], candidate) else ''
 
 
 def classify_source(value) -> str:
