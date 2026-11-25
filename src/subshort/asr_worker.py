@@ -9,7 +9,7 @@ import sys
 
 from .asr import ASRSession
 from .execution import run_process
-from .paths import resource_root
+from .paths import worker_root
 from .providers import FatalProviderError, Segment, validate_segments
 
 
@@ -24,9 +24,7 @@ class ExternalASRSession:
         self.diagnostic = diagnostic
 
     def transcribe(self, audio, language=None):
-        root = resource_root()
-        if getattr(sys, "frozen", False):
-            root /= "asr_runtime"
+        root = worker_root()
         # Use this build's worker code, not a stale SubShort installed in the venv.
         command = [str(self.python), "-I", "-X", "utf8", "-c",
                    "import sys; sys.path.insert(0, sys.argv[1]); from subshort.asr_worker import main; main()",

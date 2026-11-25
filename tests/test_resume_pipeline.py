@@ -40,14 +40,15 @@ def harness(tmp_path, monkeypatch):
         def transcribe(self, *args):
             counts["asr"] += 1
             if control.get("resplit") and Path(args[0]).parent.name == "review":
-                return [Segment(0, 1, "child")]
+                end = 3 if control.get("nested") and Path(args[0]).stem == "0-0" else 1
+                return [Segment(0, end, "child")]
             return control.get("segments", [Segment(0, 1, "first"), Segment(2, 3, "second")])
 
     class Translator:
         def __init__(self, *args, **kwargs): pass
         def translate(self, segments, language):
             counts["translate"] += 1
-            return [Segment(s.start, s.end, s.text + language, s.source_id) for s in segments]
+            return [Segment(s.start, s.end, s.text + language, s.source_id, s.speaker_id) for s in segments]
     monkeypatch.setattr("subshort.pipeline.ASRSession", lambda *args, **kwargs: ASR())
     monkeypatch.setattr("subshort.pipeline.OpenAITranslator", Translator)
 
@@ -223,8 +224,11 @@ def test_review_edits_resume_from_completed_job(tmp_path, monkeypatch):
     assert "first" in (tmp_path / "output_artifacts/resume/transcript_raw.srt").read_text(encoding="utf-8")
 
 
-@pytest.mark.parametrize("resplit,unknown_voice", [(False, False), (True, False), (False, True)])
-def test_persisted_speaker_review_dispatches_two_preset_voices(tmp_path, monkeypatch, resplit, unknown_voice):
+@pytest.mark.parametrize("resplit,unknown_voice,nested,mode", [
+    (False, False, False, "dub"), (True, False, False, "dub"), (False, True, False, "dub"),
+    (True, False, True, "dub"), (True, False, True, "subtitle"),
+])
+def test_persisted_speaker_review_dispatches_two_preset_voices(tmp_path, monkeypatch, resplit, unknown_voice, nested, mode):
     from subshort.diarization import SpeakerTurn, review_fingerprint
     from subshort.models import Job
     from subshort.providers import FatalProviderError
@@ -234,13 +238,14 @@ def test_persisted_speaker_review_dispatches_two_preset_voices(tmp_path, monkeyp
     settings.multi_speaker = True
     settings.diarization_model = settings.asr_model
     settings.ffmpeg = settings.ffprobe = sys.executable
-    control["resplit"] = resplit
+    control.update(resplit=resplit, nested=nested)
     if resplit:
         control["segments"] = [Segment(0, 3, "two speakers")]
-    turns = [SpeakerTurn(0, 1, "speaker-1"), SpeakerTurn(2, 3, "speaker-2")]
+    turns = ([SpeakerTurn(0, 3, "speaker-1"), SpeakerTurn(1, 2, "speaker-2")] if nested else
+             [SpeakerTurn(0, 1, "speaker-1"), SpeakerTurn(2, 3, "speaker-2")])
     monkeypatch.setattr(Pipeline, "_diarization", lambda *args: SimpleNamespace(diarize=lambda *args: turns))
     queue = JobQueue(tmp_path / "queue.json")
-    job = Job("resume", str(tmp_path / "source.mp4"), "vi", mode="dub")
+    job = Job("resume", str(tmp_path / "source.mp4"), "vi", mode=mode)
     queue.add(job)
     control.update(job=job, queue=queue)
     with pytest.raises(FatalProviderError, match="Cần duyệt"):
@@ -255,7 +260,7 @@ def test_persisted_speaker_review_dispatches_two_preset_voices(tmp_path, monkeyp
     voice_map = {"speaker-1": "Hải Đăng", "speaker-2": "Trúc Ly"}
     if unknown_voice:
         voice_map["speaker-2"] = "not-a-preset"
-    translation_edits = {"0.0" if resplit else "0": "Lời đã duyệt"}
+    translation_edits = {} if resplit else {"0": "Lời đã duyệt"}
     job.config.update(review_transcript=transcript_edits, review_translation=translation_edits,
                       speaker_review={"approved": True, "turns": [turn.__dict__ for turn in reviewed],
                                       "voice_map": voice_map,
@@ -269,19 +274,59 @@ def test_persisted_speaker_review_dispatches_two_preset_voices(tmp_path, monkeyp
             run()
         assert counts["tts"] == 0
         return
+    if nested:
+        with pytest.raises(FatalProviderError, match="Cần duyệt cue chồng tiếng"):
+            run()
+        assert counts["translate"] == counts["tts"] == 0
+        pending = queue.snapshot()[0]
+        candidates = pending.metadata["overlap_review"]["cues"]
+        assert [row["source_id"] for row in candidates] == ["0.0", "0.1"]
+        decisions = [dict(row, status="resolved", text=f"confirmed {row['speaker_id']}") for row in candidates]
+        pending.config["speaker_review"]["overlap"] = {
+            "fingerprint": pending.metadata["overlap_review"]["fingerprint"], "cues": decisions,
+        }
+        queue.update(pending)
+        control["job"] = queue.snapshot()[0]
     job = run()
     assert job.status == "done", job.error
     persisted = JobQueue(queue.path).snapshot()[0]
     assert persisted.config["speaker_review"]["voice_map"] == voice_map
     assert persisted.config["review_transcript"] == transcript_edits
     assert persisted.config["review_translation"] == translation_edits
-    assert [options for _, options in control["tts_calls"]] == [{"voice": "Hải Đăng"}, {"voice": "Trúc Ly"}]
-    assert control["tts_calls"][0][0] == "Lời đã duyệt"
+    if nested:
+        assert [(row["start"], row["end"], row["speaker_id"]) for row in persisted.metadata["review_translation"]] == [
+            (0, 3, "speaker-1"), (1, 2, "speaker-2"),
+        ]
+        assert counts["translate"] == 1
+        persisted.config["review_translation"] = {"0.0": "Bản đã duyệt", "0.1": "Bản đã cũ"}
+        persisted.config["review_translation_keys"] = {
+            "0.0": persisted.metadata["review_translation_keys"]["0.0"], "0.1": "stale-key",
+        }
+        queue.update(persisted)
+        control["job"] = queue.snapshot()[0]
+        resumed = run()
+        assert resumed.status == "done", resumed.error
+        assert [row["text"] for row in resumed.metadata["review_translation"]] == [
+            "Bản đã duyệt", "confirmed speaker-2vi",
+        ]
+        assert counts["translate"] == 1
+    if mode == "subtitle":
+        ass = (tmp_path / "output_artifacts/resume/translated.ass").read_text(encoding="utf-8")
+        events = [line.split(r"\pos(", 1)[1].split(")", 1)[0] for line in ass.splitlines() if line.startswith("Dialogue:")]
+        assert len(events) == 2 and events[0] != events[1]
+        assert counts["tts"] == 0
+        return
+    assert [options for _, options in control["tts_calls"][:2]] == [{"voice": "Hải Đăng"}, {"voice": "Trúc Ly"}]
+    expected = "confirmed speaker-1vi" if nested else "childvi" if resplit else "Lời đã duyệt"
+    assert control["tts_calls"][0][0] == expected
+    if nested:
+        assert control["tts_calls"][2:] == [("Bản đã duyệt", {"voice": "Hải Đăng"})]
     timeline = json.loads((tmp_path / "output_artifacts/resume/timeline.json").read_text(encoding="utf-8"))
     assert [row["speaker_id"] for row in timeline] == ["speaker-1", "speaker-2"]
     assert [row["source_id"] for row in timeline] == (["0.0", "0.1"] if resplit else ["0", "1"])
-    assert [row["source_start_seconds"] for row in timeline] == [0, 2]
-    assert [row["actual_start_seconds"] for row in timeline] == [0, round(2 / settings.slow_speed * 24000) / 24000]
+    second_start = 1 if nested else 2
+    assert [row["source_start_seconds"] for row in timeline] == [0, second_start]
+    assert [row["actual_start_seconds"] for row in timeline] == [0, round(second_start / settings.slow_speed * 24000) / 24000]
     assert [row["duration_seconds"] for row in timeline] == [.1, .1]
     assert [row["delay_seconds"] for row in timeline] == [0, 0]
     assert persisted.metadata["segments"] == 2

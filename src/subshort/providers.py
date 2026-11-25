@@ -384,7 +384,7 @@ def build_timeline(segments: list[Segment], clips: list[Path], slow_speed=1.0, s
     _positive_timing(slow_speed, "slow_speed")
     if len(segments) != len(clips):
         raise ValueError("Số cue và số clip TTS không khớp")
-    segments = validate_segments(segments, source_duration)
+    segments = validate_segments(segments, source_duration, allow_nested=multi_speaker)
     timeline = []
     lane_ends = {}
     for index, (segment, clip) in enumerate(zip(segments, clips)):

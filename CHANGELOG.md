@@ -28,6 +28,14 @@
 
 - Lỗi xác thực hoặc hạn mức khi dịch có nút mở thẳng cài đặt API.
 - Danh sách model, ngôn ngữ và giọng trong **Cài đặt** có thanh cuộn khi dài và không tràn khỏi hộp thoại.
+- Bấm **Dừng xử lý** trong lúc hàng đợi khởi tạo bộ xử lý sẽ hủy video đã nhận và giữ nguyên các video còn chờ.
+- Dịch và nhận diện phụ đề cũ dùng đúng URL dịch vụ đã cấu hình. Nếu dịch vụ trả chuyển hướng HTTP, ứng dụng báo mã lỗi thay vì gọi URL khác.
+- Hộp thoại **Duyệt transcript / speaker** mở lại được và hiển thị transcript đã lưu.
+- Giữ thời gian của các cue nhiều giọng lồng nhau khi dịch, lồng tiếng hoặc xuất phụ đề. Với cue nhận dạng từ đoạn chồng tiếng, duyệt lời và nhãn người nói trước khi dịch.
+- Sửa transcript không xóa bản dịch đã duyệt của cue không đổi. Bản dịch lưu theo cue chỉ dùng lại khi nguồn, thời gian, lời và người nói còn khớp.
+- Bản EXE đóng gói mã worker cho Python ngoài. Model và SDK vẫn dùng môi trường đã cấu hình.
+- Nếu không khởi tạo được bộ xử lý, video đã nhận chuyển sang trạng thái có thể thử lại thay vì kẹt ở trạng thái đang chạy.
+- Có thể chọn gốc ổ đĩa làm thư mục xuất. Tệp trung gian nằm trong thư mục `_artifacts` trên ổ đó.
 
 ## Bản ban đầu
 

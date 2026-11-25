@@ -369,7 +369,7 @@ class Job:
         effective = settings.for_job(self)
         effective.validate(self.mode)
         review = {key: copy.deepcopy(self.config[key]) for key in
-                  ("speaker_review", "review_transcript", "review_translation") if key in self.config}
+                  ("speaker_review", "review_transcript", "review_translation", "review_translation_keys") if key in self.config}
         self.config = {**effective.snapshot(), **review}
         self.status = "running"
         return effective

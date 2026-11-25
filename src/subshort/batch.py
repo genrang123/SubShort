@@ -1,5 +1,4 @@
 import copy
-import inspect
 import threading
 
 from .execution import Cancelled
@@ -55,14 +54,19 @@ class Batch:
                     if not self.queue.claim(job):
                         continue
                 if pipeline is None:
-                    pipeline = self.pipeline_factory(settings, self.queue, self.notify)
+                    try:
+                        pipeline = self.pipeline_factory(settings, self.queue, self.notify)
+                    except Exception as exc:
+                        job.status = "cancelled" if isinstance(exc, Cancelled) else "failed"
+                        job.error = str(exc)
+                        self.queue.update(job)
+                        self.notify(job)
+                        raise
                     with self._lock:
                         self._pipeline = pipeline
-                run = pipeline.run
-                if "keep_open" in inspect.signature(run).parameters:
-                    run(job, keep_open=True)
-                else:
-                    run(job)
+                        if self._stop.is_set():
+                            pipeline.cancel()
+                pipeline.run(job, keep_open=True)
                 if job.status == "cancelled":
                     break
         except Cancelled:
@@ -71,9 +75,8 @@ class Batch:
             self.error = str(exc)
         finally:
             try:
-                close = getattr(pipeline, "close", None)
-                if close is not None:
-                    close()
+                if pipeline is not None:
+                    pipeline.close()
             finally:
                 with self._lock:
                     self._pipeline = None

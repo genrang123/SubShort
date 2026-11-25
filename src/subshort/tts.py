@@ -17,6 +17,7 @@ import threading
 import time
 
 from .execution import check_cancelled
+from .paths import worker_root
 
 
 class TtsSession:
@@ -51,13 +52,20 @@ class TtsSession:
         check_cancelled()
         executable = str(python_executable)
         frozen_self = getattr(sys, "frozen", False) and Path(executable).resolve() == Path(sys.executable).resolve()
-        command = [executable, "--tts-worker"] if frozen_self else [executable, "-m", "subshort.tts_worker"]
         env = os.environ.copy()
         env.update(HF_HUB_OFFLINE="1", TRANSFORMERS_OFFLINE="1", HF_HUB_CACHE=str(Path(hf_cache).expanduser().resolve()),
                    PYTHONIOENCODING="utf-8")
+        if frozen_self:
+            command = [executable, "--tts-worker"]
+            cwd = None
+        else:
+            root = worker_root()
+            command = [executable, "-m", "subshort.tts_worker"]
+            env["PYTHONPATH"] = str(root) + (os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else "")
+            cwd = str(root)
         self.process = subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                                         stderr=subprocess.PIPE, text=True, encoding="utf-8", errors="replace",
-                                        bufsize=1, cwd=str(Path(__file__).resolve().parent.parent), env=env,
+                                        bufsize=1, cwd=cwd, env=env,
                                         start_new_session=os.name == "posix",
                                         creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0)
         def stdout_reader():

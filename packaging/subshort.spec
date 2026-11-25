@@ -10,14 +10,25 @@ source = root / "src"
 sys.path.insert(0, str(source))
 # Collect application protocol workers; models, caches, and provider runtimes stay external.
 application_modules = collect_submodules("subshort")
-asr_runtime = [(str(source / "subshort" / f"{name}.py"), "asr_runtime/subshort")
-               for name in ("__init__", "asr", "asr_worker", "execution", "paths", "providers")]
+WORKER_MODULES = (
+    "__init__",
+    "asr",
+    "asr_worker",
+    "diarization_worker",
+    "execution",
+    "paths",
+    "providers",
+    "separation",
+    "tts_worker",
+)
+worker_runtime = [(str(source / "subshort" / f"{name}.py"), "worker_runtime/subshort")
+                  for name in WORKER_MODULES]
 
 a = Analysis(
     [str(root / "packaging" / "entry.py")],
     pathex=[str(source)],
     hiddenimports=application_modules,
-    datas=[(str(source / "subshort" / "default_settings.json"), "subshort")] + asr_runtime + collect_data_files("faster_whisper"),
+    datas=[(str(source / "subshort" / "default_settings.json"), "subshort")] + worker_runtime + collect_data_files("faster_whisper"),
     excludes=["tkinter"],
 )
 pyz = PYZ(a.pure)

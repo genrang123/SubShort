@@ -24,9 +24,7 @@ def main():
     try:
         payload = request.get("payload")
         req = urllib.request.Request(request["url"], None if payload is None else payload.encode(), request["headers"])
-        open_request = (urllib.request.build_opener(_NoRedirect()).open
-                        if payload is None else urllib.request.urlopen)
-        with open_request(req, timeout=request["timeout"]) as response:
+        with urllib.request.build_opener(_NoRedirect()).open(req, timeout=request["timeout"]) as response:
             answer = {"ok": True, "body": response.read().decode("utf-8", "replace")}
     except urllib.error.HTTPError as exc:
         answer = {"ok": False, "status": exc.code, "body": exc.read().decode("utf-8", "replace")}

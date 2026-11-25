@@ -10,6 +10,7 @@ import sys
 import tempfile
 
 from .execution import run_process
+from .paths import worker_root
 
 MODEL_FILENAME = "UVR-MDX-NET-Inst_HQ_3.onnx"
 CACHE_FILES = (MODEL_FILENAME, "download_checks.json", "vr_model_data.json", "mdx_model_data.json")
@@ -57,18 +58,23 @@ def separate_background(source: Path, work: Path, model_dir: Path, python_execut
     env = os.environ.copy()
     env["AUDIO_SEPARATOR_MODEL_DIR"] = str(model_dir)
     env["CUDA_VISIBLE_DEVICES"] = "-1"
-    # Make the application module discoverable in an independently provisioned Python.
-    root = str(Path(__file__).resolve().parent.parent)
-    env["PYTHONPATH"] = root + (os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else "")
+    env["PYTHONIOENCODING"] = "utf-8"
     try:
         frozen_self = (getattr(sys, "frozen", False)
                        and Path(python_executable).resolve() == Path(sys.executable).resolve())
-        command = ([str(python_executable), "--separator-worker"] if frozen_self
-                   else [str(python_executable), "-m", "subshort.separation", "--worker"])
+        if frozen_self:
+            command = [str(python_executable), "--separator-worker"]
+            cwd = None
+        else:
+            # Make the application module discoverable in an independently provisioned Python.
+            root = worker_root()
+            env["PYTHONPATH"] = str(root) + (os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else "")
+            command = [str(python_executable), "-m", "subshort.separation", "--worker"]
+            cwd = str(root)
         completed = run_process(
             command,
             input=json.dumps({"source": str(source), "output_dir": str(output_dir), "model_dir": str(model_dir)}),
-            capture_output=True, text=True, encoding="utf-8", env=env,
+            capture_output=True, text=True, encoding="utf-8", errors="replace", cwd=cwd, env=env,
         )
         if completed.returncode:
             raise RuntimeError(f"HQ3 separation failed: {completed.stderr.strip()}")

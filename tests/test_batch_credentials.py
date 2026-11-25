@@ -2,6 +2,7 @@ import threading
 
 from subshort.batch import Batch
 from subshort.models import Job, Settings
+from subshort.pipeline import Pipeline
 from subshort.queue import JobQueue
 
 
@@ -12,10 +13,8 @@ def test_key_change_applies_next_batch_not_active_batch(tmp_path):
     settings = Settings(root=tmp_path, openai_api_key='old-key')
     entered, release = threading.Event(), threading.Event()
     keys = []
-    class Worker:
-        def __init__(self, current, *_):
-            self.settings = current
-        def run(self, job):
+    class Worker(Pipeline):
+        def run(self, job, *, keep_open=False):
             if job.id == 'one' and not keys:
                 entered.set()
                 if not release.wait(3):

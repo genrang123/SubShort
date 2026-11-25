@@ -57,21 +57,10 @@ class MediaAdapter:
         audio.parent.mkdir(parents=True, exist_ok=True)
         self.run([self.ffmpeg, "-y", "-ss", str(start), "-t", str(end - start), "-i", str(video), "-vn", "-ac", "1", "-ar", "16000", str(audio)])
 
-
-    def change_speed(self, source: Path, output: Path, speed: float):
-        self.check()
-        output.parent.mkdir(parents=True, exist_ok=True)
-        self.run([self.ffmpeg, "-y", "-i", str(source), "-filter_complex", f"[0:v:0]setpts=PTS/{speed}[v];[0:a:0]atempo={speed}[a]", "-map", "[v]", "-map", "[a]", "-c:v", "libx264", "-c:a", "pcm_s16le", str(output)])
-
     def mix_background(self, original: Path, voice: Path, output: Path, volume: float):
         self.check()
         output.parent.mkdir(parents=True, exist_ok=True)
         self.run([self.ffmpeg, "-y", "-i", str(original), "-i", str(voice), "-filter_complex", f"[0:a]volume={volume}[bg];[bg][1:a]amix=inputs=2:duration=longest[a]", "-map", "[a]", "-ar", "48000", "-c:a", "pcm_s16le", str(output)])
-
-    def change_audio_speed(self, source: Path, output: Path, speed: float):
-        self.check()
-        output.parent.mkdir(parents=True, exist_ok=True)
-        self.run([self.ffmpeg, "-y", "-i", str(source), "-af", f"atempo={speed}", "-ar", "48000", "-c:a", "pcm_s16le", str(output)])
 
     @staticmethod
     def _positive(value, name):
@@ -115,18 +104,6 @@ class MediaAdapter:
 
     def prepare_background(self, original: Path, output: Path, speed: float, duration: float):
         self.prepare_audio(original, output, speed, duration)
-
-    def concat_audio(self, clips: list[Path], output: Path):
-        self.check()
-        if not clips:
-            raise MediaError("Không có audio lồng tiếng")
-        output.parent.mkdir(parents=True, exist_ok=True)
-        manifest = output.with_suffix(".concat.txt")
-        manifest.write_text("".join(f"file '{clip.resolve().as_posix()}'\n" for clip in clips), encoding="utf-8")
-        try:
-            self.run([self.ffmpeg, "-y", "-f", "concat", "-safe", "0", "-i", str(manifest), "-c:a", "pcm_s16le", str(output)])
-        finally:
-            manifest.unlink(missing_ok=True)
 
     def timeline_audio(self, clips: list[Path], starts: list[float], output: Path, target_duration: float | None = None):
         if len(clips) != len(starts) or not clips:
@@ -340,19 +317,6 @@ class MediaAdapter:
                         raise ValueError
         except (ValueError, TypeError, KeyError, AttributeError, MediaError):
             raise MediaError("Output không có stream/duration hợp lệ") from None
-
-    def subtitle_video(self, video: Path, audio: Path, subtitles: Path, output: Path):
-        self.mux(video, audio, subtitles, output)
-    def mux(self, video: Path, audio: Path, subtitles: Path | None, output: Path):
-        self.check()
-        output.parent.mkdir(parents=True, exist_ok=True)
-        args = [self.ffmpeg, "-y", "-i", str(video), "-i", str(audio)]
-        if subtitles:
-            args += ["-i", str(subtitles)]
-        args += ["-map", "0:v:0", "-map", "1:a:0", "-c:v", "copy", "-c:a", "aac"]
-        if subtitles:
-            args += ["-c:s", "mov_text"]
-        self.run(args + [str(output)])
 
     @staticmethod
     def run(args, **kwargs):

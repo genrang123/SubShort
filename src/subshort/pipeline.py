@@ -6,7 +6,8 @@ from pathlib import Path
 
 from .asr import ASRSession
 from .asr_worker import ExternalASRSession
-from .diarization import DiarizationSession, align_segments, stable_labels, validate_turns, review_fingerprint
+from .diarization import (DiarizationSession, align_segments, resolve_overlap_cues, review_fingerprint,
+                          stable_labels, validate_turns)
 from .execution import Execution, Cancelled, check_cancelled
 from .media import MediaAdapter
 from .paths import artifact_directory
@@ -238,27 +239,50 @@ class Pipeline:
                 if not isinstance(voice_map, dict) or not voice_map or any(not isinstance(key, str) or not isinstance(value, str) or not value.strip() for key, value in voice_map.items()):
                     raise FatalProviderError("Ánh xạ speaker→voice chưa đầy đủ")
                 try:
-                    asr_session = self._asr(settings, diagnostic)
                     def resplit(segment):
                         children = []
-                        turn_windows = [(max(segment.start, turn.start), min(segment.end, turn.end), turn)
-                                        for turn in reviewed if min(segment.end, turn.end) > max(segment.start, turn.start)]
-                        for window_start, window_end, turn in turn_windows:
-                            window_audio = work / "review" / f"{segment.source_id}-{turn.speaker_id}.wav"
-                            media.extract_audio_window(video, window_audio, window_start, window_end)
-                            for child in asr_session.transcribe(window_audio, settings.source_language or None):
-                                if child.end > child.start:
-                                    children.append(Segment(window_start + child.start, window_start + child.end, child.text,
-                                                            f"{segment.source_id}.{len(children)}"))
-                        return children
+                        for index, turn in enumerate(reviewed):
+                            start, end = max(segment.start, turn.start), min(segment.end, turn.end)
+                            if start >= end:
+                                continue
+                            window_audio = samples_dir / f"{segment.source_id}-{index}.wav"
+                            media.extract_audio_window(video, window_audio, start, end)
+                            rows = validate_segments(self._asr(settings, diagnostic).transcribe(
+                                window_audio, settings.source_language or None), end - start)
+                            if not rows:
+                                raise FatalProviderError(f"Cue {segment.source_id}: không có lời trong lượt {turn.speaker_id}; sửa lượt nói rồi chạy lại")
+                            for child in rows:
+                                children.append(Segment(start + child.start, start + child.end, child.text,
+                                                        f"{segment.source_id}.{len(children)}", turn.speaker_id))
+                        return sorted(children, key=lambda child: (child.start, child.end))
                     segments = align_segments(segments, reviewed, resplit=resplit)
-                    source_segments = list(segments)
+                except Cancelled:
+                    raise
                 except Exception as exc:
                     raise FatalProviderError(str(exc)) from None
+                job.metadata["diarization"] = [turn.__dict__ for turn in reviewed]
+                job.metadata["speaker_review"] = {"turns": job.metadata["diarization"], "voice_map": voice_map,
+                                                  "fingerprint": expected_review_fingerprint}
+                mixed = [cue for cue in segments if "." in cue.source_id and any(
+                    turn.speaker_id != cue.speaker_id and turn.start < cue.end and cue.start < turn.end
+                    for turn in reviewed)]
+                if mixed:
+                    overlap_key = review_fingerprint(expected_review_fingerprint, mixed, reviewed, [])
+                    approval = review.get("overlap")
+                    job.metadata["overlap_review"] = {"fingerprint": overlap_key,
+                                                      "cues": [dict(cue.__dict__, status="needs_review") for cue in mixed]}
+                    if not isinstance(approval, dict) or approval.get("fingerprint") != overlap_key:
+                        raise FatalProviderError("Cần duyệt cue chồng tiếng trước khi dịch")
+                    resolved = {cue.source_id: cue for cue in resolve_overlap_cues(mixed, reviewed, approval.get("cues"))}
+                    mixed_ids = {cue.source_id for cue in mixed}
+                    segments = [resolved.get(cue.source_id, cue) for cue in segments
+                                if cue.source_id not in mixed_ids or cue.source_id in resolved]
+                    if not segments:
+                        raise FatalProviderError("Cần giữ ít nhất một cue để dịch")
+                source_segments = segments
                 speakers = {segment.speaker_id for segment in segments}
                 if speakers - set(voice_map):
                     raise FatalProviderError("Ánh xạ speaker→voice chưa đầy đủ")
-                job.metadata["speaker_review"] = {"turns": [turn.__dict__ for turn in reviewed], "voice_map": voice_map, "fingerprint": expected_review_fingerprint}
             self._stage(job, "translate", 0.36); check_cancelled()
             from .providers import TRANSLATION_POLICY
             translation_dependencies = {
@@ -276,22 +300,28 @@ class Pipeline:
                 options["base_url"] = settings.translation_base_url
             translator = translator_class(key, **options)
             translator.diagnostic = diagnostic
-            translated = cache.load_segments("translate", translation_dependencies) if cache else None
+            translated = cache.load_segments("translate", translation_dependencies, allow_nested=settings.multi_speaker) if cache else None
             if translated is None:
                 translated = translator.translate(segments, settings.target_language)
                 if cache:
-                    cache.save_segments("translate", translation_dependencies, translated)
+                    cache.save_segments("translate", translation_dependencies, translated, allow_nested=settings.multi_speaker)
                 stages.append("translate")
                 self.notify(job, f"Dịch xong: {len(translated)} cue sang {settings.target_language}")
             else:
                 reused_stages.append("translate")
                 self.notify(job, f"Dịch: dùng lại cache ({len(translated)} cue)")
-            translation_edits = job_config.get("review_translation", {}) if isinstance(job_config, dict) else {}
-            if isinstance(translation_edits, dict):
-                translated = [Segment(item.start, item.end, str(translation_edits.get(item.source_id or source_segments[index].source_id, item.text)), item.source_id, item.speaker_id)
-                              for index, item in enumerate(translated)]
-            segments = [Segment(item.start, item.end, item.text, item.source_id or source_segments[index].source_id,
-                                item.speaker_id or source_segments[index].speaker_id) for index, item in enumerate(translated)]
+            translation_edits = job_config.get("review_translation", {})
+            saved_keys = job_config.get("review_translation_keys", {})
+            source_hash = cache.source_hash if cache else str(video.resolve())
+            keys = {cue.source_id: review_fingerprint(source_hash, [cue], [], settings.target_language)
+                    for cue in source_segments}
+            segments = []
+            for item, cue in zip(translated, source_segments, strict=True):
+                saved_key = saved_keys.get(cue.source_id)
+                text = (translation_edits.get(cue.source_id, item.text)
+                        if saved_key == keys[cue.source_id] or (saved_key is None and "." not in cue.source_id) else item.text)
+                segments.append(Segment(item.start, item.end, text, cue.source_id, cue.speaker_id))
+            job.metadata["review_translation_keys"] = keys
             job.metadata["review_translation"] = [segment.__dict__ for segment in segments]
             job.metadata["review_source_hash"] = cache.source_hash if cache else str(video.resolve())
             check_cancelled()
@@ -382,7 +412,9 @@ class Pipeline:
                 alignment = timeline_alignment([], source["duration"], settings.slow_speed, settings.final_speed)
                 dubbed = work / "original_slow.wav"
                 media.prepare_audio(video, dubbed, settings.slow_speed, alignment["target_duration_seconds"])
-                captions = [Segment(s.start / (settings.slow_speed * settings.final_speed), s.end / (settings.slow_speed * settings.final_speed), s.text) for s in segments]
+                captions = [Segment(s.start / (settings.slow_speed * settings.final_speed),
+                                    s.end / (settings.slow_speed * settings.final_speed),
+                                    s.text, s.source_id, s.speaker_id) for s in segments]
             caption_info = {}
             subtitles = None
             from .subtitles import write_ass

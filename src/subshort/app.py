@@ -4,12 +4,12 @@ from uuid import uuid4
 from PySide6.QtCore import QItemSelectionModel, QSignalBlocker, Qt, QTimer
 from PySide6.QtWidgets import (
     QApplication, QComboBox, QDialog, QFileDialog, QHBoxLayout, QInputDialog,
-    QLabel, QMainWindow, QMenu, QMessageBox, QTableWidgetItem,
+    QLabel, QMainWindow, QMenu, QMessageBox, QPlainTextEdit, QTableWidgetItem,
     QTabWidget, QVBoxLayout, QWidget,
 )
 from .models import Settings, Job
 from .queue import CLAIMABLE_STATUSES, JobQueue, PENDING_STATUSES, RETRYABLE_STATUSES, QueueError
-from .diarization import review_fingerprint, validate_turns
+from .diarization import resolve_overlap_cues, review_fingerprint, validate_turns
 import json
 import os
 import subprocess
@@ -378,6 +378,9 @@ class App(QMainWindow):
         if not isinstance(transcript_rows, list) or not transcript_rows:
             show_message(self, "Chưa có transcript", "Chạy job trước để tạo transcript cần duyệt.", QMessageBox.Icon.Information)
             return
+        transcript_overrides = job.config.get("review_transcript", {})
+        transcript_rows = [dict(row, text=transcript_overrides.get(str(row["source_id"]), row["text"]))
+                           for row in transcript_rows]
         dialog = QDialog(self)
         dialog.setWindowTitle("Duyệt transcript, bản dịch và speaker")
         fit_dialog(dialog, 800, 600)
@@ -400,6 +403,16 @@ class App(QMainWindow):
 
         turns_text = edit_json('Lượt nói', 'Giữ start/end/speaker_id; status=resolved.', turns)
         transcript_text = edit_json('Transcript', 'Giữ start/end/source_id; sửa text để dịch lại.', transcript_rows)
+        overlap = data.get('overlap_review')
+        overlap_text = None
+        if overlap:
+            approval = job.config.get('speaker_review', {}).get('overlap', {})
+            rows = approval['cues'] if approval.get('fingerprint') == overlap['fingerprint'] else overlap['cues']
+            overlap_text = edit_json('Cue chồng tiếng',
+                                     'Đối chiếu transcript và âm thanh gốc. Giữ thời gian và ID; sửa lời, nhãn người nói, rồi đặt status=resolved. Đặt status=discarded nếu là cue trùng.',
+                                     rows)
+            if approval.get('fingerprint') != overlap['fingerprint']:
+                tabs.setCurrentIndex(tabs.count() - 1)
         translation_text = edit_json('Bản dịch', 'Giữ start/end/source_id/speaker_id; sửa text để TTS chạy lại.',
                                      data.get('review_translation', []))
         voices_text = edit_json('Giọng nói', 'Voice map JSON, ví dụ {"speaker-1": "<voice-id>"}:',
@@ -419,15 +432,19 @@ class App(QMainWindow):
             try:
                 edited_turns = validate_turns(json.loads(turns_text.toPlainText()), None)
                 voice_map = json.loads(voices_text.toPlainText())
-                transcript_rows = json.loads(transcript_text.toPlainText())
-                original_rows = data.get("review_transcript", [])
-                if not isinstance(transcript_rows, list) or len(transcript_rows) != len(original_rows):
+                original_rows = transcript_rows
+                edited_rows = json.loads(transcript_text.toPlainText())
+                if not isinstance(edited_rows, list) or len(edited_rows) != len(original_rows):
                     raise ValueError("Transcript phải giữ nguyên số cue")
                 edited_text = {}
-                for original, row in zip(original_rows, transcript_rows):
+                changed_sources = set()
+                for original, row in zip(original_rows, edited_rows):
                     if any(row.get(key) != original.get(key) for key in ("start", "end", "source_id")) or not isinstance(row.get("text"), str) or not row["text"].strip():
                         raise ValueError("Chỉ được sửa text; start/end/source_id phải giữ nguyên")
-                    edited_text[str(original["source_id"])] = row["text"]
+                    source_id = str(original["source_id"])
+                    edited_text[source_id] = row["text"]
+                    if row["text"] != original["text"]:
+                        changed_sources.add(source_id)
                 translation_rows = json.loads(translation_text.toPlainText())
                 original_translations = data.get("review_translation", [])
                 if not isinstance(translation_rows, list) or len(translation_rows) != len(original_translations):
@@ -443,12 +460,23 @@ class App(QMainWindow):
                 review_segments = [Segment(float(row["start"]), float(row["end"]), edited_text[str(row["source_id"])], str(row["source_id"]), str(row.get("speaker_id", ""))) for row in original_rows]
                 review_key = review_fingerprint(data.get("review_source_hash", ""), review_segments, edited_turns, [row.text for row in review_segments])
                 config = dict(job.config)
-                if edited_text != config.get("review_transcript", {}):
-                    config["review_translation"] = edited_translation
-                else:
-                    config["review_translation"] = {**config.get("review_translation", {}), **edited_translation}
+                translation_keys = data.get("review_translation_keys", {})
+                config["review_translation_keys"] = dict(config.get("review_translation_keys", {}))
+                for cue_id in edited_translation:
+                    if cue_id in translation_keys:
+                        config["review_translation_keys"][cue_id] = translation_keys[cue_id]
+                config["review_translation"] = {
+                    cue_id: text for cue_id, text in config.get("review_translation", {}).items()
+                    if cue_id.partition(".")[0] not in changed_sources
+                } | edited_translation
                 config["review_transcript"] = edited_text
                 config["speaker_review"] = {"approved": True, "turns": [turn.__dict__ for turn in edited_turns], "voice_map": voice_map, "fingerprint": review_key}
+                if overlap_text is not None and review_key == data.get("speaker_review", {}).get("fingerprint"):
+                    decisions = json.loads(overlap_text.toPlainText())
+                    candidates = [Segment(row['start'], row['end'], row['text'], row['source_id'], row['speaker_id'])
+                                  for row in overlap['cues']]
+                    resolve_overlap_cues(candidates, edited_turns, decisions)
+                    config["speaker_review"]["overlap"] = {"fingerprint": overlap['fingerprint'], "cues": decisions}
                 job.config = config
                 job.status, job.error = "queued", ""
                 self.queue.update(job)

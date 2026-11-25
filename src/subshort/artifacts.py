@@ -78,7 +78,7 @@ class ArtifactCache:
             {"version": 1, "entries": entries}, ensure_ascii=False, sort_keys=True, indent=2,
         ).encode("utf-8"))
 
-    def load_segments(self, stage: str, dependencies: dict) -> list[Segment] | None:
+    def load_segments(self, stage: str, dependencies: dict, *, allow_nested=False) -> list[Segment] | None:
         path = self._load(stage, dependencies, "segments")
         if path is None:
             return None
@@ -86,12 +86,12 @@ class ArtifactCache:
             rows = json.loads(path.read_text(encoding="utf-8"))
             if not isinstance(rows, list):
                 return None
-            return validate_segments([Segment(**row) for row in rows])
+            return validate_segments([Segment(**row) for row in rows], allow_nested=allow_nested)
         except (OSError, ValueError, TypeError, ProviderError):
             return None
 
-    def save_segments(self, stage: str, dependencies: dict, segments: list[Segment]) -> None:
-        segments = validate_segments(segments)
+    def save_segments(self, stage: str, dependencies: dict, segments: list[Segment], *, allow_nested=False) -> None:
+        segments = validate_segments(segments, allow_nested=allow_nested)
         name = hashlib.sha256(stage.encode("utf-8")).hexdigest()
         path = self._contained(f"{name}.segments.json")
         _write_atomic(path, json.dumps([asdict(segment) for segment in segments],

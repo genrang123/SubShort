@@ -13,6 +13,7 @@ import subprocess
 import sys
 
 from .execution import check_cancelled, run_process
+from .paths import worker_root
 from .providers import FatalProviderError, ProviderError, Segment, validate_segments
 
 @dataclass(frozen=True)
@@ -69,8 +70,9 @@ def stable_labels(turns):
 def align_segments(segments, turns, *, resplit=None):
     """Attach labels by time overlap; multi-label cues require caller re-ASR.
 
-    ``resplit`` receives a Segment and must return ASR-derived child segments
-    with their own text and bounds.  Text is never divided by time proportion.
+    ``resplit`` returns ASR children with absolute bounds. An explicit speaker
+    must match a reviewed turn covering the child; otherwise the overlap must
+    identify exactly one speaker. Text is never divided by time proportion.
     """
     segments = validate_segments(segments)
     turns = validate_turns(turns)
@@ -91,17 +93,43 @@ def align_segments(segments, turns, *, resplit=None):
         if resplit is None:
             raise ProviderError(f"alignment {segment.source_id or segment.start}: một ASR cue có nhiều người nói; cần nhận dạng lại")
         children = resplit(segment)
-        children = validate_segments(children, segment.end)
-        if not children or children[0].start < segment.start or children[-1].end > segment.end:
+        children = validate_segments(children, segment.end, allow_nested=True)
+        if not children or any(child.start < segment.start for child in children):
             raise ProviderError(f"alignment {segment.source_id or segment.start}: kết quả nhận dạng lại vượt cue")
         for child in children:
             child_labels = {turn.speaker_id for turn in turns
                             if min(child.end, turn.end) > max(child.start, turn.start)}
-            if len(child_labels) != 1:
+            speaker_id = child.speaker_id
+            if speaker_id:
+                if not any(turn.speaker_id == speaker_id and turn.start <= child.start and child.end <= turn.end
+                           for turn in turns):
+                    raise ProviderError(f"alignment {segment.source_id or segment.start}: lượt con vượt phạm vi người nói")
+            elif len(child_labels) == 1:
+                speaker_id = child_labels.pop()
+            else:
                 raise ProviderError(f"alignment {segment.source_id or segment.start}: lượt con chưa xác định người nói")
-            output.append(Segment(child.start, child.end, child.text,
-                                  child.source_id or segment.source_id, child_labels.pop()))
-    return validate_segments(sorted(output, key=lambda item: (item.start, item.end)))
+            output.append(Segment(child.start, child.end, child.text, child.source_id or segment.source_id, speaker_id))
+    return validate_segments(sorted(output, key=lambda item: (item.start, item.end)), allow_nested=True)
+
+def resolve_overlap_cues(candidates, turns, decisions):
+    if not isinstance(decisions, list) or len(decisions) != len(candidates):
+        raise ProviderError("Cần giữ đủ cue chồng tiếng để duyệt hoặc bỏ trùng")
+    resolved = []
+    for candidate, row in zip(candidates, decisions):
+        if not isinstance(row, dict) or any(row.get(key) != getattr(candidate, key)
+                                           for key in ("source_id", "start", "end")):
+            raise ProviderError("Cue chồng tiếng phải giữ nguyên ID, start và end")
+        if row.get("status") == "discarded":
+            continue
+        speaker, text = row.get("speaker_id"), row.get("text")
+        if row.get("status") != "resolved" or not isinstance(text, str) or not text.strip():
+            raise ProviderError("Đặt status=resolved cho cue đã kiểm tra hoặc discarded cho cue trùng")
+        if not any(turn.speaker_id == speaker and turn.start <= candidate.start and candidate.end <= turn.end
+                   for turn in turns):
+            raise ProviderError("Người nói phải có lượt đã duyệt phủ toàn bộ cue")
+        resolved.append(Segment(candidate.start, candidate.end, text.strip(), candidate.source_id, speaker))
+    return resolved
+
 
 
 class DiarizationSession:
@@ -126,15 +154,17 @@ class DiarizationSession:
             raise ProviderError(f"Không tìm thấy audio diarization: {audio}")
         check_cancelled()
         request = {"audio": str(audio.resolve()), "model_path": str(self.model_path.resolve()), "device": self.device}
+        root = worker_root()
         env = os.environ.copy()
-        env.update(HF_HUB_OFFLINE="1", TRANSFORMERS_OFFLINE="1")
+        env.update(HF_HUB_OFFLINE="1", TRANSFORMERS_OFFLINE="1", PYTHONIOENCODING="utf-8")
+        env["PYTHONPATH"] = str(root) + (os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else "")
         if self.hf_cache is not None:
             env["HF_HOME"] = str(self.hf_cache.resolve())
             env["HF_HUB_CACHE"] = str(self.hf_cache.resolve())
         command = [self.python_executable, "-m", "subshort.diarization_worker"]
         try:
             result = run_process(command, input=json.dumps(request), capture_output=True, text=True,
-                                 cwd=str(Path(__file__).resolve().parents[1]), env=env)
+                                 encoding="utf-8", errors="replace", cwd=str(root), env=env)
         except (OSError, subprocess.SubprocessError) as exc:
             raise FatalProviderError(f"Không chạy được worker diarization local: {exc}") from None
         check_cancelled()

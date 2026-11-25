@@ -125,3 +125,8 @@ def test_frozen_launch_passes_writable_state_to_app(monkeypatch, tmp_path):
     cli.main()
     assert roots == [tmp_path / "local" / "SubShort"]
     assert (roots[0] / "config" / "settings.json").read_text(encoding="utf-8") == "{}"
+
+
+def test_artifact_directory_at_filesystem_root(tmp_path):
+    root = tmp_path.resolve().parents[-1]
+    assert paths.artifact_directory(tmp_path, str(root), "job-1") == root / "_artifacts" / "job-1"

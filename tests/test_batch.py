@@ -3,7 +3,7 @@ from types import SimpleNamespace
 import pytest
 
 from subshort.batch import Batch
-from subshort.models import Job
+from subshort.models import Job, Settings
 from subshort.queue import JobQueue
 from subshort.pipeline import Pipeline
 from subshort.providers import FatalProviderError
@@ -16,13 +16,14 @@ def test_batch_serial_claim_cancel_and_restart(tmp_path):
     entered, release = threading.Event(), threading.Event()
     calls = []
 
-    class Worker:
+    class Worker(Pipeline):
         def __init__(self, settings, queue, notify):
+            super().__init__(settings, queue, notify)
             self.cancelled = False
         def cancel(self):
             self.cancelled = True
             release.set()
-        def run(self, job):
+        def run(self, job, *, keep_open=False):
             calls.append(job.id)
             entered.set()
             assert release.wait(3)
@@ -44,16 +45,56 @@ def test_batch_serial_claim_cancel_and_restart(tmp_path):
     assert calls == ['one', 'two']
 
 
+def test_cancel_during_pipeline_startup_persists_cancelled_job(tmp_path):
+    queue = JobQueue(tmp_path / 'queue.json')
+    for name in ('first', 'next'):
+        queue.add(Job(name, str(tmp_path / f'{name}.mp4'), 'vi'))
+    entered, release = threading.Event(), threading.Event()
+
+    def create(*args):
+        entered.set()
+        assert release.wait(5)
+        return Pipeline(*args)
+
+    batch = Batch(Settings(root=tmp_path), queue, create, lambda *_: None)
+    assert batch.start()
+    try:
+        assert entered.wait(5)
+        batch.cancel()
+    finally:
+        release.set()
+        batch.join(5)
+
+    assert not batch.running
+    assert [job.status for job in JobQueue(queue.path).snapshot()] == ['cancelled', 'queued']
+
+
+def test_pipeline_startup_error_leaves_job_retryable(tmp_path):
+    queue = JobQueue(tmp_path / 'queue.json')
+    for name in ('first', 'next'):
+        queue.add(Job(name, name + '.mp4', 'vi'))
+
+    def create(*args):
+        raise RuntimeError('pipeline initialization failed')
+
+    batch = Batch(Settings(root=tmp_path), queue, create, lambda *_: None)
+    assert batch.start()
+    batch.join(5)
+    assert not batch.running
+    first, following = queue.snapshot()
+    assert (first.status, following.status) == ('failed', 'queued')
+    assert first.error == batch.error == 'pipeline initialization failed'
+    assert queue.retry(first.id)
+
+
 def test_batch_continues_job_error_but_stops_fatal(tmp_path):
     queue = JobQueue(tmp_path / 'queue.json')
     for name in ('bad', 'fatal', 'untouched'):
         queue.add(Job(name, name, 'vi'))
     calls = []
 
-    class Worker:
-        def __init__(self, *_):
-            pass
-        def run(self, job):
+    class Worker(Pipeline):
+        def run(self, job, *, keep_open=False):
             calls.append(job.id)
             job.status = 'failed'
             queue.update(job)

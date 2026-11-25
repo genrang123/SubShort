@@ -4,10 +4,11 @@ from types import SimpleNamespace
 
 import pytest
 from PySide6.QtCore import Qt
-from PySide6.QtWidgets import QApplication
+from PySide6.QtWidgets import QApplication, QPlainTextEdit, QTabWidget
 
 from subshort.app import App
 from subshort.models import Job, Settings
+from subshort.pipeline import Pipeline
 
 
 def wait_until(predicate):
@@ -43,12 +44,10 @@ def test_ui_start_cancel_retry_close_on_main_thread(make_app, monkeypatch):
     main_thread = threading.get_ident()
     refresh_threads = []
 
-    class Worker:
-        def __init__(self, settings, queue, notify):
-            self.queue, self.notify = queue, notify
+    class Worker(Pipeline):
         def cancel(self):
             stopped.set()
-        def run(self, job):
+        def run(self, job, *, keep_open=False):
             entered.set()
             assert stopped.wait(3)
             job.status = 'cancelled'
@@ -367,3 +366,103 @@ def test_failure_opens_api_settings_for_jobs_saved_provider(make_app, monkeypatc
     assert app.settings.gemini_api_key == 'replacement-for-job'
     assert app.settings.translation_provider == 'openai'
     assert app.current_job().status == 'failed'
+
+
+def test_transcript_review_opens_with_saved_cues(make_app, monkeypatch):
+    app = make_app()
+    app.queue.add(Job('review', 'source.mp4', 'vi', status='failed', metadata={
+        'review_transcript': [{'start': 0, 'end': 1, 'source_id': '0', 'text': 'Xin chào'}],
+    }))
+    app.refresh()
+    app.jobs.selectRow(0)
+    app.details_button.click()
+    opened = []
+
+    def inspect(dialog):
+        dialog.show()
+        tabs = dialog.findChild(QTabWidget)
+        tabs.setCurrentIndex(next(i for i in range(tabs.count()) if tabs.tabText(i) == 'Transcript'))
+        opened.extend(editor.toPlainText() for editor in dialog.findChildren(QPlainTextEdit)
+                      if editor.accessibleName() == 'Transcript' and editor.isVisible())
+        dialog.reject()
+
+    monkeypatch.setattr('subshort.app.run_dialog', inspect)
+    app.details.review.click()
+    assert len(opened) == 1 and 'Xin chào' in opened[0]
+
+
+def test_review_keeps_translation_overrides_for_unchanged_cues(make_app, monkeypatch):
+    import json
+    from PySide6.QtWidgets import QPushButton
+
+    app = make_app()
+    transcript = [{'start': i, 'end': i + 1, 'source_id': str(i), 'text': text}
+                  for i, text in enumerate(('one', 'two', 'three'))]
+    translations = [dict(row, source_id=f'{row["source_id"]}.0', speaker_id='speaker-1', text=text)
+                    for row, text in zip(transcript, ('một', 'hai', 'ba'))]
+    app.queue.add(Job('review', 'source.mp4', 'vi', status='failed',
+                      config={'review_translation': {'0.0': 'một', '1.0': 'hai', '2.0': 'ba'}},
+                      metadata={'review_transcript': transcript, 'review_translation': translations}))
+    app.refresh()
+    app.jobs.selectRow(0)
+    app.details_button.click()
+
+    def save(dialog):
+        dialog.show()
+        editors = {editor.accessibleName(): editor for editor in dialog.findChildren(QPlainTextEdit)}
+        edited = json.loads(editors['Transcript'].toPlainText())
+        edited[0]['text'] = 'first'
+        editors['Transcript'].setPlainText(json.dumps(edited))
+        edited = json.loads(editors['Bản dịch'].toPlainText())
+        edited[2]['text'] = 'thứ ba'
+        editors['Bản dịch'].setPlainText(json.dumps(edited))
+        next(button for button in dialog.findChildren(QPushButton) if button.text() == 'Lưu để chạy lại').click()
+
+    monkeypatch.setattr('subshort.app.run_dialog', save)
+    app.details.review.click()
+    job = app.queue.snapshot()[0]
+    assert job.status == 'queued'
+    assert job.config['review_translation'] == {'1.0': 'hai', '2.0': 'thứ ba'}
+
+
+def test_review_confirms_or_discards_overlapping_cues(make_app, monkeypatch):
+    import json
+    from PySide6.QtWidgets import QPushButton
+    from subshort.diarization import SpeakerTurn, review_fingerprint
+    from subshort.providers import Segment
+
+    app = make_app()
+    turns = [SpeakerTurn(0.0, 3.0, 'speaker-1'), SpeakerTurn(1.0, 2.0, 'speaker-2')]
+    parent = Segment(0.0, 3.0, 'Hai người nói', '0')
+    mixed = [Segment(0.0, 3.0, 'Lời A', '0.0', 'speaker-1'),
+             Segment(1.0, 2.0, 'Lời A', '0.1', 'speaker-2')]
+    fingerprint = review_fingerprint('source-hash', [parent], turns, [parent.text])
+    overlap_key = review_fingerprint(fingerprint, mixed, turns, [])
+    app.queue.add(Job('review', 'source.mp4', 'vi', status='failed', metadata={
+        'review_source_hash': 'source-hash', 'review_transcript': [parent.__dict__],
+        'diarization': [turn.__dict__ for turn in turns],
+        'speaker_review': {'fingerprint': fingerprint, 'voice_map': {'speaker-1': 'voice-a'}},
+        'overlap_review': {'fingerprint': overlap_key, 'cues': [dict(cue.__dict__, status='needs_review') for cue in mixed]},
+    }))
+    app.refresh()
+    app.jobs.selectRow(0)
+    app.details_button.click()
+
+    def save(dialog):
+        dialog.show()
+        tabs = dialog.findChild(QTabWidget)
+        assert tabs.tabText(tabs.currentIndex()) == 'Cue chồng tiếng'
+        editor = tabs.currentWidget().findChild(QPlainTextEdit)
+        rows = json.loads(editor.toPlainText())
+        rows[0].update(text='Lời A đã sửa', status='resolved')
+        rows[1]['status'] = 'discarded'
+        editor.setPlainText(json.dumps(rows, ensure_ascii=False))
+        next(button for button in dialog.findChildren(QPushButton) if button.text() == 'Lưu để chạy lại').click()
+
+    monkeypatch.setattr('subshort.app.run_dialog', save)
+    app.details.review.click()
+    job = app.queue.snapshot()[0]
+    assert job.status == 'queued'
+    approval = job.config['speaker_review']['overlap']
+    assert approval['fingerprint'] == overlap_key
+    assert [(row['text'], row['status']) for row in approval['cues']] == [('Lời A đã sửa', 'resolved'), ('Lời A', 'discarded')]

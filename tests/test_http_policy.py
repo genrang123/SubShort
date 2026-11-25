@@ -305,6 +305,16 @@ def test_worker_returns_body_on_success(serve):
     assert answer == {"ok": True, "body": OK_BODY}
 
 
+def test_worker_returns_redirect_status_unchanged(serve):
+    def respond(handler):
+        handler.send_response(302)
+        handler.send_header('Location', '/alternate-endpoint')
+        handler.end_headers()
+
+    answer = _worker(serve(respond))
+    assert answer == {'ok': False, 'status': 302, 'body': ''}
+
+
 def test_worker_uses_safe_network_category(serve):
     def respond(handler):
         handler.close_connection = True

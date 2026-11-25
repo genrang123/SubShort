@@ -11,6 +11,11 @@ def resource_root() -> Path:
     return Path(__file__).resolve().parents[1]
 
 
+def worker_root() -> Path:
+    root = resource_root()
+    return root / "worker_runtime" if getattr(sys, "frozen", False) else root
+
+
 def state_root(override: str | Path | None = None) -> Path:
     if override is not None:
         root = Path(override).expanduser().resolve()
@@ -51,4 +56,5 @@ def command_status(command: str) -> dict[str, object]:
 
 def artifact_directory(root: Path, output_dir: str, job_id: str) -> Path:
     output = (root / output_dir).resolve()
-    return output.with_name(output.name + "_artifacts") / job_id
+    artifacts = output.with_name(output.name + "_artifacts") if output.name else output / "_artifacts"
+    return artifacts / job_id
